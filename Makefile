@@ -58,6 +58,16 @@ train_gpt2cu: train_gpt2.cu
 test_gpt2cu: test_gpt2.cu
 	nvcc -O3 --use_fast_math $< -lcublas -o $@
 
-clean:
-	rm -f train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu
+llm-rs/Cargo.toml:
+	cargo init --bin llm-rs
+	cd llm-rs && cargo add libc
 
+llm-rs/src/main.rs: train_gpt2.c llm-rs/Cargo.toml
+	c2rust-transpile train_gpt2.c
+	mv train_gpt2.rs llm-rs/src/main.rs
+
+train_gpt2rs: llm-rs/src/main.rs
+	cd llm-rs && cargo build --release && cp target/release/llm-rs ../train_gpt2rs
+
+clean:
+	rm -f train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu train_gpt2rs
