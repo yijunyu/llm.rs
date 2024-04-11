@@ -6,8 +6,10 @@
 	make train_gpt2rs
 ```
 
-Then run `train_gpt2rs` instead of `train_gpt2`. As a result, it took on average 3.626s to 
-run a step, which is comparable to the C counterpart (3.658s per step). 
+Then run `train_gpt2rs` instead of `train_gpt2`. As a result, it took on average 39.626s to 
+run a step, which is comparable to the C counterpart (3.658s per step).  The reason for that is
+OpenMP has not been used in the Rust version. That's why we will need a parallel version of this
+generated Rust code.
 
 Placing the output code into "result.py" and run
 
@@ -25,4 +27,3 @@ With the general, and sleep with a letter.
 Now, that nobler, yet and
 ```
 
-Notably, the C output is exactly the same. Well done, C2Rust!
