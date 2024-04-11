@@ -1,4 +1,4 @@
-# Migrating Karparthy's [llm.c](https://github.com/karpathy/llm.c) project into Rust
+# Migrating Karpathy's [llm.c](https://github.com/karpathy/llm.c) project into Rust
 
 ## Using [c2rust](https://github.com/immunant)
 
