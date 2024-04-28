@@ -6,9 +6,10 @@
 	make train_gpt2rs
 ```
 
-Then run `train_gpt2rs` instead of `train_gpt2`. As a result, it took on average 39.626s to 
-run a step, which is comparable to the C counterpart (3.658s per step).  The reason for that is
-OpenMP has not been used in the Rust version. That's why we will need a parallel version of this
+Then run `train_gpt2rs` instead of `train_gpt2`. As a result, it took on average 42.798s to 
+run a step, which is comparable to the C counterpart (9.585s per step w/o OpenMP and 5.543s per step with 8 threads of OpenMP).  
+
+The reason for that is OpenMP has not been used in the Rust version. That's why we will need a parallel version of this
 generated Rust code.
 
 Placing the output code into "result.py" and run
@@ -35,6 +36,6 @@ Using GPT-4, we are able to convert all the while loops back into for loops.
 ## Using [Mate](https://github.com/trusted-programming/mate) and Rayon library
 
 Furthermore, we use Mate to convert some of these for loops into iter() functions using the Rayon library.
-In this way, the resulting code has 10% better performance than the vanilla for loops.
+In this way, the resulting code has 39.501s per step, or 10% better performance than the vanilla for loops. 
 
 
