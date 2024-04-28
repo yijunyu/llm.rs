@@ -26,4 +26,15 @@ O my heart, pardon all your sins and ruin your health together
 With the general, and sleep with a letter.
 Now, that nobler, yet and
 ```
+## Using [GPT4](https://chat.openai.com)
+
+Although the transpilation of c2rust was successful, all the for loops have been turned into while loops.
+
+Using GPT-4, we are able to convert all the while loops back into for loops.
+
+## Using [Mate](https://github.com/trusted-programming/mate) and Rayon library
+
+Furthermore, we use Mate to convert some of these for loops into iter() functions using the Rayon library.
+In this way, the resulting code has 10% better performance than the vanilla for loops.
+
 
