@@ -38,4 +38,5 @@ Using GPT-4, we are able to convert all the while loops back into for loops.
 Furthermore, we use Mate to convert some of these for loops into iter() functions using the Rayon library.
 In this way, the resulting code has 39.501s per step, or 10% better performance than the vanilla for loops. 
 
-
+## Post Code Restructuring
+19.047s per step on average
