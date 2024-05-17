@@ -1,3 +1,4 @@
+/llm-rs/target
 .vscode/
 data/
 gpt2_124M.bin

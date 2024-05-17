@@ -8,6 +8,8 @@
     unused_mut
 )]
 #![feature(extern_types, label_break_value)]
+use std::arch::x86_64::*;
+
 #[allow(unused_imports)]
 use rayon::prelude::*;
 extern "C" {
@@ -366,22 +368,38 @@ pub unsafe extern "C" fn matmul_forward(
 ) {
     for b in 0..B {
         for t in 0..T {
-            let mut out_bt: *mut f32 = out.offset((b * T * OC) as isize).offset((t * OC) as isize);
-            let mut inp_bt: *mut f32 = inp.offset((b * T * C) as isize).offset((t * C) as isize);
+            let out_bt: *mut f32 = out.offset((b * T * OC + t * OC) as isize);
+            let inp_bt: *mut f32 = inp.offset((b * T * C + t * C) as isize);
 
             for o in 0..OC {
-                let val: f32 = if !bias.is_null() {
+                let mut sum: f32 = if !bias.is_null() {
                     *bias.offset(o as isize)
                 } else {
-                    0.0f32
+                    0.0
                 };
 
-                let wrow: *mut f32 = weight.offset((o * C) as isize);
-                let mut sum: f32 = val;
+                let wrow: *const f32 = weight.offset((o * C) as isize);
 
-                (0..C).into_iter().for_each(|i| {
-                    sum += *inp_bt.offset(i as isize) * *wrow.offset(i as isize);
-                });
+                // Vectorized summation using SIMD
+                let mut i = 0;
+                let mut sums: __m128 = _mm_setzero_ps();
+
+                while i <= C - 4 {
+                    let inp_vals = _mm_loadu_ps(inp_bt.offset(i as isize));
+                    let wrow_vals = _mm_loadu_ps(wrow.offset(i as isize));
+                    sums = _mm_add_ps(sums, _mm_mul_ps(inp_vals, wrow_vals));
+                    i += 4;
+                }
+
+                // Horizontal sum of SIMD register
+                let mut res: [f32; 4] = [0.0; 4];
+                _mm_storeu_ps(res.as_mut_ptr(), sums);
+                sum += res.iter().sum::<f32>();
+
+                // Process remaining elements
+                for j in i..C {
+                    sum += *inp_bt.offset(j as isize) * *wrow.offset(j as isize);
+                }
 
                 *out_bt.offset(o as isize) = sum;
             }
@@ -401,40 +419,39 @@ pub unsafe extern "C" fn matmul_backward(
     mut C: i32,
     mut OC: i32,
 ) {
+    // First loop: Compute dinp
     for b in 0..B {
+        let dinp_b = dinp.offset((b * T * C) as isize);
+        let dout_b = dout.offset((b * T * OC) as isize);
         for t in 0..T {
-            let dout_bt: *mut f32 = dout.offset((b * T * OC) as isize).offset((t * OC) as isize);
-            let dinp_bt: *mut f32 = dinp.offset((b * T * C) as isize).offset((t * C) as isize);
-
+            let dinp_bt = dinp_b.offset((t * C) as isize);
+            let dout_bt = dout_b.offset((t * OC) as isize);
             for o in 0..OC {
-                let wrow: *mut f32 = weight.offset((o * C) as isize);
-                let d: f32 = *dout_bt.offset(o as isize);
-
-                (0..C).into_iter().for_each(|i| {
+                let wrow = weight.offset((o * C) as isize);
+                let d = *dout_bt.offset(o as isize);
+                for i in 0..C {
                     *dinp_bt.offset(i as isize) += *wrow.offset(i as isize) * d;
-                });
+                }
             }
         }
     }
-    for o_0 in 0..OC {
-        for b_0 in 0..B {
-            for t_0 in 0..T {
-                let dout_bt_0: *mut f32 = dout
-                    .offset((b_0 * T * OC) as isize)
-                    .offset((t_0 * OC) as isize);
-                let inp_bt: *mut f32 = inp
-                    .offset((b_0 * T * C) as isize)
-                    .offset((t_0 * C) as isize);
-                let dwrow: *mut f32 = dweight.offset((o_0 * C) as isize);
-                let d_0: f32 = *dout_bt_0.offset(o_0 as isize);
 
+    // Second loop: Compute dweight and dbias
+    for o in 0..OC {
+        let dwrow = dweight.offset((o * C) as isize);
+        for b in 0..B {
+            let dout_b = dout.offset((b * T * OC) as isize);
+            let inp_b = inp.offset((b * T * C) as isize);
+            for t in 0..T {
+                let dout_bt = dout_b.offset((t * OC) as isize);
+                let inp_bt = inp_b.offset((t * C) as isize);
+                let d = *dout_bt.offset(o as isize);
                 if !dbias.is_null() {
-                    *dbias.offset(o_0 as isize) += d_0;
+                    *dbias.offset(o as isize) += d;
                 }
-
-                (0..C).into_iter().for_each(|i_0| {
-                    *dwrow.offset(i_0 as isize) += *inp_bt.offset(i_0 as isize) * d_0;
-                });
+                for i in 0..C {
+                    *dwrow.offset(i as isize) += *inp_bt.offset(i as isize) * d;
+                }
             }
         }
     }
@@ -691,7 +708,7 @@ pub unsafe extern "C" fn softmax_forward(
                 *probs_bt.offset(i_1 as isize) /= sum;
             });
         }
-    }
+    }  
 }
 
 pub unsafe extern "C" fn crossentropy_forward(
