@@ -8,7 +8,7 @@
     unused_mut
 )]
 #![feature(extern_types, label_break_value)]
-use std::arch::x86_64::*;
+use std::slice;
 
 #[allow(unused_imports)]
 use rayon::prelude::*;
@@ -366,45 +366,42 @@ pub unsafe extern "C" fn matmul_forward(
     mut C: i32,
     mut OC: i32,
 ) {
-    for b in 0..B {
-        for t in 0..T {
-            let out_bt: *mut f32 = out.offset((b * T * OC + t * OC) as isize);
-            let inp_bt: *mut f32 = inp.offset((b * T * C + t * C) as isize);
+    let out_slice = slice::from_raw_parts_mut(out, (B * T * OC) as usize);
+    let inp_slice = slice::from_raw_parts(inp, (B * T * C) as usize);
+    let weight_slice = slice::from_raw_parts(weight, (OC * C) as usize);
+    let bias_slice = if !bias.is_null() {
+        Some(slice::from_raw_parts(bias, OC as usize))
+    } else {
+        None
+    };
 
-            for o in 0..OC {
-                let mut sum: f32 = if !bias.is_null() {
-                    *bias.offset(o as isize)
+    // Split the output slice into chunks for each batch to avoid mutable borrow issues
+    let out_chunks: Vec<_> = out_slice.chunks_mut((T * OC) as usize).collect();
+    let inp_chunks: Vec<_> = inp_slice.chunks((T * C) as usize).collect();
+
+    out_chunks.into_par_iter().zip(inp_chunks.into_par_iter()).enumerate().for_each(|(b, (out_base, inp_base))| {
+        (0..T).for_each(|t| {
+            let out_bt = &mut out_base[(t * OC) as usize..((t + 1) * OC) as usize];
+            let inp_bt = &inp_base[(t * C) as usize..((t + 1) * C) as usize];
+            
+            (0..OC).for_each(|o| {
+                let mut val = if let Some(bias_slice) = bias_slice {
+                    bias_slice[o as usize]
                 } else {
-                    0.0
+                    0.0f32
                 };
 
-                let wrow: *const f32 = weight.offset((o * C) as isize);
+                let wrow = &weight_slice[(o * C) as usize..(o as usize + 1) * C as usize];
+                let mut sum: f32 = val;
 
-                // Vectorized summation using SIMD
-                let mut i = 0;
-                let mut sums: __m128 = _mm_setzero_ps();
+                (0..C).for_each(|i| {
+                    sum += inp_bt[i as usize] * wrow[i as usize];
+                });
 
-                while i <= C - 4 {
-                    let inp_vals = _mm_loadu_ps(inp_bt.offset(i as isize));
-                    let wrow_vals = _mm_loadu_ps(wrow.offset(i as isize));
-                    sums = _mm_add_ps(sums, _mm_mul_ps(inp_vals, wrow_vals));
-                    i += 4;
-                }
-
-                // Horizontal sum of SIMD register
-                let mut res: [f32; 4] = [0.0; 4];
-                _mm_storeu_ps(res.as_mut_ptr(), sums);
-                sum += res.iter().sum::<f32>();
-
-                // Process remaining elements
-                for j in i..C {
-                    sum += *inp_bt.offset(j as isize) * *wrow.offset(j as isize);
-                }
-
-                *out_bt.offset(o as isize) = sum;
-            }
-        }
-    }
+                out_bt[o as usize] = sum;
+            });
+        });
+    });
 }
 
 pub unsafe extern "C" fn matmul_backward(
@@ -419,39 +416,51 @@ pub unsafe extern "C" fn matmul_backward(
     mut C: i32,
     mut OC: i32,
 ) {
-    // First loop: Compute dinp
-    for b in 0..B {
-        let dinp_b = dinp.offset((b * T * C) as isize);
-        let dout_b = dout.offset((b * T * OC) as isize);
+    let dinp_slice = slice::from_raw_parts_mut(dinp, (B * T * C) as usize);
+    let dout_slice = slice::from_raw_parts(dout, (B * T * OC) as usize);
+    let weight_slice = slice::from_raw_parts(weight, (OC * C) as usize);
+
+    // Split the dinp slice into chunks for each batch to avoid mutable borrow issues
+    let dinp_chunks: Vec<_> = dinp_slice.chunks_mut((T * C) as usize).collect();
+    let dout_chunks: Vec<_> = dout_slice.chunks((T * OC) as usize).collect();
+
+    // Parallelize the backward pass into `dinp`
+    dinp_chunks.into_par_iter().zip(dout_chunks.into_par_iter()).for_each(|(dinp_bt, dout_bt)| {
         for t in 0..T {
-            let dinp_bt = dinp_b.offset((t * C) as isize);
-            let dout_bt = dout_b.offset((t * OC) as isize);
+            let dout_t = &dout_bt[(t * OC) as usize..((t + 1) * OC) as usize];
+            let dinp_t = &mut dinp_bt[(t * C) as usize..((t + 1) * C) as usize];
+
             for o in 0..OC {
-                let wrow = weight.offset((o * C) as isize);
-                let d = *dout_bt.offset(o as isize);
+                let wrow = &weight_slice[(o * C) as usize..((o + 1) * C) as usize];
+                let d = dout_t[o as usize];
+
                 for i in 0..C {
-                    *dinp_bt.offset(i as isize) += *wrow.offset(i as isize) * d;
+                    dinp_t[i as usize] += wrow[i as usize] * d;
                 }
             }
         }
-    }
+    });
 
-    // Second loop: Compute dweight and dbias
-    for o in 0..OC {
-        let dwrow = dweight.offset((o * C) as isize);
-        for b in 0..B {
-            let dout_b = dout.offset((b * T * OC) as isize);
-            let inp_b = inp.offset((b * T * C) as isize);
-            for t in 0..T {
-                let dout_bt = dout_b.offset((t * OC) as isize);
-                let inp_bt = inp_b.offset((t * C) as isize);
-                let d = *dout_bt.offset(o as isize);
+    // TODO: Outer loop parallelized originally
+    for o_0 in 0..OC {
+        for b_0 in 0..B {
+            for t_0 in 0..T {
+                let dout_bt_0: *mut f32 = dout
+                    .offset((b_0 * T * OC) as isize)
+                    .offset((t_0 * OC) as isize);
+                let inp_bt: *mut f32 = inp
+                    .offset((b_0 * T * C) as isize)
+                    .offset((t_0 * C) as isize);
+                let dwrow: *mut f32 = dweight.offset((o_0 * C) as isize);
+                let d_0: f32 = *dout_bt_0.offset(o_0 as isize);
+
                 if !dbias.is_null() {
-                    *dbias.offset(o as isize) += d;
+                    *dbias.offset(o_0 as isize) += d_0;
                 }
-                for i in 0..C {
-                    *dwrow.offset(i as isize) += *inp_bt.offset(i as isize) * d;
-                }
+
+                (0..C).into_iter().for_each(|i_0| {
+                    *dwrow.offset(i_0 as isize) += *inp_bt.offset(i_0 as isize) * d_0;
+                });
             }
         }
     }
@@ -470,6 +479,8 @@ pub unsafe extern "C" fn attention_forward(
     let mut C3: i32 = C * 3 as i32;
     let mut hs: i32 = C / NH;
     let mut scale: f32 = (1.0f64 / sqrtf(hs as f32) as f64) as f32;
+
+    // TODO: All 3 outer loops parallelized originally
     for b in 0..B {
         for t in 0..T {
             for h in 0..NH {
@@ -684,6 +695,7 @@ pub unsafe extern "C" fn softmax_forward(
     mut T: i32,
     mut V: i32,
 ) {
+    // TODO: Both outer loops parallelized originally
     for b in 0..B {
         for t in 0..T {
             let mut logits_bt: *mut f32 =
@@ -708,7 +720,7 @@ pub unsafe extern "C" fn softmax_forward(
                 *probs_bt.offset(i_1 as isize) /= sum;
             });
         }
-    }  
+    }
 }
 
 pub unsafe extern "C" fn crossentropy_forward(
