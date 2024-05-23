@@ -1,0 +1,14 @@
+tasks:
+  - before: |
+    pip install -r requirements.txt
+    rustup default nightly
+    cargo install flamegraph
+    sudo apt update -y
+    sudo apt install linux-tools-common linux-tools-generic -y
+  - init: |
+    python prepro_tinyshakespeare.py
+    python train_gpt2.py
+    cd llm-rs
+    cargo build --release
+    cd ..
+    flamegraph -o run.svg llm-rs/target/release/llm-rs
