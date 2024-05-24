@@ -377,14 +377,18 @@ pub unsafe extern "C" fn matmul_forward(
         None
     };
 
-    // Split the output slice into chunks for each batch to avoid mutable borrow issues
-    let out_chunks: Vec<_> = out_slice.chunks_mut((T * OC) as usize).collect();
-    let inp_chunks: Vec<_> = inp_slice.chunks((T * C) as usize).collect();
+    // Determine the number of threads available
+    let num_batches = rayon::current_num_threads();
+
+    // Split the output and input slices into the number of batches equal to available threads
+    let out_chunks: Vec<_> = out_slice.chunks_mut((T * OC) as usize / num_batches).collect();
+    let inp_chunks: Vec<_> = inp_slice.chunks((T * C) as usize / num_batches).collect();
 
     out_chunks.into_par_iter().zip(inp_chunks.into_par_iter()).enumerate().for_each(|(b, (out_base, inp_base))| {
-        (0..T).for_each(|t| {
-            let out_bt = &mut out_base[(t * OC) as usize..((t + 1) * OC) as usize];
-            let inp_bt = &inp_base[(t * C) as usize..((t + 1) * C) as usize];
+        let actual_T = out_base.len() / OC as usize;
+        (0..actual_T).for_each(|t| {
+            let out_bt = &mut out_base[(t * OC as usize) as usize..((t + 1) * OC as usize) as usize];
+            let inp_bt = &inp_base[(t * C as usize) as usize..((t + 1) * C as usize) as usize];
             
             (0..OC).for_each(|o| {
                 let mut val = if let Some(bias_slice) = bias_slice {
@@ -422,15 +426,19 @@ pub unsafe extern "C" fn matmul_backward(
     let dout_slice = slice::from_raw_parts(dout, (B * T * OC) as usize);
     let weight_slice = slice::from_raw_parts(weight, (OC * C) as usize);
 
-    // Split the dinp slice into chunks for each batch to avoid mutable borrow issues
-    let dinp_chunks: Vec<_> = dinp_slice.chunks_mut((T * C) as usize).collect();
-    let dout_chunks: Vec<_> = dout_slice.chunks((T * OC) as usize).collect();
+    // Determine the number of threads available
+    let num_batches = rayon::current_num_threads();
+
+    // Split the slices into the number of batches equal to available threads
+    let dinp_chunks: Vec<_> = dinp_slice.chunks_mut((T * C) as usize / num_batches).collect();
+    let dout_chunks: Vec<_> = dout_slice.chunks((T * OC) as usize / num_batches).collect();
 
     // Parallelize the backward pass into `dinp`
     dinp_chunks.into_par_iter().zip(dout_chunks.into_par_iter()).for_each(|(dinp_bt, dout_bt)| {
-        for t in 0..T {
-            let dout_t = &dout_bt[(t * OC) as usize..((t + 1) * OC) as usize];
-            let dinp_t = &mut dinp_bt[(t * C) as usize..((t + 1) * C) as usize];
+        let actual_T = dinp_bt.len() / C as usize;
+        for t in 0..actual_T {
+            let dout_t = &dout_bt[(t * OC as usize) as usize..((t + 1) * OC as usize) as usize];
+            let dinp_t = &mut dinp_bt[(t * C as usize) as usize..((t + 1) * C as usize) as usize];
 
             for o in 0..OC {
                 let wrow = &weight_slice[(o * C) as usize..((o + 1) * C) as usize];
