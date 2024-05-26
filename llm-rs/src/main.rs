@@ -9,8 +9,6 @@
 )]
 #![feature(extern_types, label_break_value)]
 use std::slice;
-use flame;
-use std::fs::File;
 
 #[allow(unused_imports)]
 use rayon::prelude::*;
@@ -2130,8 +2128,5 @@ unsafe fn main_0() -> i32 {
     return 0 as i32;
 }
 pub fn main() {
-    flame::start("starting...");
     unsafe { ::std::process::exit(main_0() as i32) }
-    flame::end("ending.");
-    flame::dump_html(&mut File::create("flame-graph.html").unwrap()).unwrap();
 }
