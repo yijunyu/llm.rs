@@ -8,7 +8,7 @@
     unused_mut
 )]
 #![feature(extern_types, label_break_value)]
-use std::slice;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 #[allow(unused_imports)]
 use rayon::prelude::*;
@@ -366,44 +366,38 @@ pub unsafe extern "C" fn matmul_forward(
     mut C: i32,
     mut OC: i32,
 ) {
-    let out_slice = slice::from_raw_parts_mut(out, (B * T * OC) as usize);
-    let inp_slice = slice::from_raw_parts(inp, (B * T * C) as usize);
-    let weight_slice = slice::from_raw_parts(weight, (OC * C) as usize);
-    let bias_slice = if !bias.is_null() {
-        Some(slice::from_raw_parts(bias, OC as usize))
-    } else {
-        None
-    };
+    let out = AtomicPtr::new(out);
+    let inp = AtomicPtr::new(inp);
+    let weight = AtomicPtr::new(weight);
+    let bias = AtomicPtr::new(bias);
 
-    // Determine the number of threads available
-    let num_batches = rayon::current_num_threads();
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let out_bt: *mut f32 = out
+                .load(Ordering::SeqCst)
+                .offset((b * T * OC) as isize)
+                .offset((t * OC) as isize);
+            let inp_bt: *mut f32 = inp
+                .load(Ordering::SeqCst)
+                .offset((b * T * C) as isize)
+                .offset((t * C) as isize);
 
-    // Split the output and input slices into the number of batches equal to available threads
-    let out_chunks: Vec<_> = out_slice.chunks_mut((T * OC) as usize / num_batches).collect();
-    let inp_chunks: Vec<_> = inp_slice.chunks((T * C) as usize / num_batches).collect();
-
-    out_chunks.into_par_iter().zip(inp_chunks.into_par_iter()).enumerate().for_each(|(b, (out_base, inp_base))| {
-        let actual_T = out_base.len() / OC as usize;
-        (0..actual_T).for_each(|t| {
-            let out_bt = &mut out_base[(t * OC as usize) as usize..((t + 1) * OC as usize) as usize];
-            let inp_bt = &inp_base[(t * C as usize) as usize..((t + 1) * C as usize) as usize];
-            
-            (0..OC).for_each(|o| {
-                let mut val = if let Some(bias_slice) = bias_slice {
-                    bias_slice[o as usize]
+            for o in 0..OC {
+                let val: f32 = if !bias.load(Ordering::SeqCst).is_null() {
+                    *bias.load(Ordering::SeqCst).offset(o as isize)
                 } else {
                     0.0f32
                 };
 
-                let wrow = &weight_slice[(o * C) as usize..(o as usize + 1) * C as usize];
+                let wrow: *mut f32 = weight.load(Ordering::SeqCst).offset((o * C) as isize);
                 let mut sum: f32 = val;
 
-                (0..C).for_each(|i| {
-                    sum += inp_bt[i as usize] * wrow[i as usize];
+                (0..C).into_iter().for_each(|i| {
+                    sum += *inp_bt.offset(i as isize) * *wrow.offset(i as isize);
                 });
 
-                out_bt[o as usize] = sum;
-            });
+                *out_bt.offset(o as isize) = sum;
+            }
         });
     });
 }
@@ -420,50 +414,51 @@ pub unsafe extern "C" fn matmul_backward(
     mut C: i32,
     mut OC: i32,
 ) {
-    let dinp_slice = slice::from_raw_parts_mut(dinp, (B * T * C) as usize);
-    let dout_slice = slice::from_raw_parts(dout, (B * T * OC) as usize);
-    let weight_slice = slice::from_raw_parts(weight, (OC * C) as usize);
+    let dinp = AtomicPtr::new(dinp);
+    let dweight = AtomicPtr::new(dweight);
+    let dbias = AtomicPtr::new(dbias);
+    let dout = AtomicPtr::new(dout);
+    let inp = AtomicPtr::new(inp);
+    let weight = AtomicPtr::new(weight);
 
-    // Determine the number of threads available
-    let num_batches = rayon::current_num_threads();
-
-    // Split the slices into the number of batches equal to available threads
-    let dinp_chunks: Vec<_> = dinp_slice.chunks_mut((T * C) as usize / num_batches).collect();
-    let dout_chunks: Vec<_> = dout_slice.chunks((T * OC) as usize / num_batches).collect();
-
-    // Parallelize the backward pass into `dinp`
-    dinp_chunks.into_par_iter().zip(dout_chunks.into_par_iter()).for_each(|(dinp_bt, dout_bt)| {
-        let actual_T = dinp_bt.len() / C as usize;
-        for t in 0..actual_T {
-            let dout_t = &dout_bt[(t * OC as usize) as usize..((t + 1) * OC as usize) as usize];
-            let dinp_t = &mut dinp_bt[(t * C as usize) as usize..((t + 1) * C as usize) as usize];
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let dout_bt: *mut f32 = dout
+                .load(Ordering::SeqCst)
+                .offset((b * T * OC) as isize)
+                .offset((t * OC) as isize);
+            let dinp_bt: *mut f32 = dinp
+                .load(Ordering::SeqCst)
+                .offset((b * T * C) as isize)
+                .offset((t * C) as isize);
 
             for o in 0..OC {
-                let wrow = &weight_slice[(o * C) as usize..((o + 1) * C) as usize];
-                let d = dout_t[o as usize];
+                let wrow: *mut f32 = weight.load(Ordering::SeqCst).offset((o * C) as isize);
+                let d: f32 = *dout_bt.offset(o as isize);
 
-                for i in 0..C {
-                    dinp_t[i as usize] += wrow[i as usize] * d;
-                }
+                (0..C).into_iter().for_each(|i| {
+                    *dinp_bt.offset(i as isize) += *wrow.offset(i as isize) * d;
+                });
             }
-        }
+        });
     });
 
-    // TODO: Outer loop parallelized originally
-    for o_0 in 0..OC {
+    (0..OC).into_par_iter().for_each(|o_0| {
         for b_0 in 0..B {
             for t_0 in 0..T {
                 let dout_bt_0: *mut f32 = dout
+                    .load(Ordering::SeqCst)
                     .offset((b_0 * T * OC) as isize)
                     .offset((t_0 * OC) as isize);
                 let inp_bt: *mut f32 = inp
+                    .load(Ordering::SeqCst)
                     .offset((b_0 * T * C) as isize)
                     .offset((t_0 * C) as isize);
-                let dwrow: *mut f32 = dweight.offset((o_0 * C) as isize);
+                let dwrow: *mut f32 = dweight.load(Ordering::SeqCst).offset((o_0 * C) as isize);
                 let d_0: f32 = *dout_bt_0.offset(o_0 as isize);
 
-                if !dbias.is_null() {
-                    *dbias.offset(o_0 as isize) += d_0;
+                if !dbias.load(Ordering::SeqCst).is_null() {
+                    *dbias.load(Ordering::SeqCst).offset(o_0 as isize) += d_0;
                 }
 
                 (0..C).into_iter().for_each(|i_0| {
@@ -471,7 +466,7 @@ pub unsafe extern "C" fn matmul_backward(
                 });
             }
         }
-    }
+    });
 }
 
 pub unsafe extern "C" fn attention_forward(
@@ -484,22 +479,34 @@ pub unsafe extern "C" fn attention_forward(
     mut C: i32,
     mut NH: i32,
 ) {
-    let mut C3: i32 = C * 3 as i32;
-    let mut hs: i32 = C / NH;
-    let mut scale: f32 = (1.0f64 / sqrtf(hs as f32) as f64) as f32;
+    let C3: i32 = C * 3;
+    let hs: i32 = C / NH;
+    let scale: f32 = (1.0f64 / (hs as f32).sqrt() as f64) as f32;
 
-    // TODO: All 3 outer loops parallelized originally
-    for b in 0..B {
-        for t in 0..T {
-            for h in 0..NH {
-                let query_t = inp.offset((b * T * C3 + t * C3 + h * hs) as isize);
-                let preatt_bth = preatt.offset((b * NH * T * T + h * T * T + t * T) as isize);
-                let att_bth = att.offset((b * NH * T * T + h * T * T + t * T) as isize);
+    let out = AtomicPtr::new(out);
+    let preatt = AtomicPtr::new(preatt);
+    let att = AtomicPtr::new(att);
+    let inp = AtomicPtr::new(inp);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            (0..NH).into_par_iter().for_each(|h| {
+                let query_t = inp
+                    .load(Ordering::SeqCst)
+                    .offset((b * T * C3 + t * C3 + h * hs) as isize);
+                let preatt_bth = preatt
+                    .load(Ordering::SeqCst)
+                    .offset((b * NH * T * T + h * T * T + t * T) as isize);
+                let att_bth = att
+                    .load(Ordering::SeqCst)
+                    .offset((b * NH * T * T + h * T * T + t * T) as isize);
 
                 let mut maxval = -10000.0f32;
 
                 for t2 in 0..=t {
-                    let key_t2 = inp.offset((b * T * C3 + t2 * C3 + h * hs + C) as isize);
+                    let key_t2 = inp
+                        .load(Ordering::SeqCst)
+                        .offset((b * T * C3 + t2 * C3 + h * hs + C) as isize);
                     let mut val = 0.0f32;
                     (0..hs).into_iter().for_each(|i| {
                         val += *query_t.offset(i as isize) * *key_t2.offset(i as isize);
@@ -527,21 +534,25 @@ pub unsafe extern "C" fn attention_forward(
                     }
                 });
 
-                let out_bth = out.offset((b * T * C + t * C + h * hs) as isize);
+                let out_bth = out
+                    .load(Ordering::SeqCst)
+                    .offset((b * T * C + t * C + h * hs) as isize);
                 (0..hs).into_iter().for_each(|i_0| {
                     *out_bth.offset(i_0 as isize) = 0.0;
                 });
 
                 for t2_2 in 0..=t {
-                    let value_t2 = inp.offset((b * T * C3 + t2_2 * C3 + h * hs + 2 * C) as isize);
+                    let value_t2 = inp
+                        .load(Ordering::SeqCst)
+                        .offset((b * T * C3 + t2_2 * C3 + h * hs + 2 * C) as isize);
                     let att_btht2 = *att_bth.offset(t2_2 as isize);
                     (0..hs).into_iter().for_each(|i_1| {
                         *out_bth.offset(i_1 as isize) += att_btht2 * *value_t2.offset(i_1 as isize);
                     });
                 }
-            }
-        }
-    }
+            });
+        });
+    });
 }
 
 pub unsafe extern "C" fn attention_backward(
@@ -703,13 +714,19 @@ pub unsafe extern "C" fn softmax_forward(
     mut T: i32,
     mut V: i32,
 ) {
-    // TODO: Both outer loops parallelized originally
-    for b in 0..B {
-        for t in 0..T {
-            let mut logits_bt: *mut f32 =
-                unsafe { logits.offset((b * T * V) as isize).offset((t * V) as isize) };
-            let mut probs_bt: *mut f32 =
-                unsafe { probs.offset((b * T * V) as isize).offset((t * V) as isize) };
+    let probs = AtomicPtr::new(probs);
+    let logits = AtomicPtr::new(logits);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let logits_bt: *mut f32 = logits
+                .load(Ordering::SeqCst)
+                .offset((b * T * V) as isize)
+                .offset((t * V) as isize);
+            let probs_bt: *mut f32 = probs
+                .load(Ordering::SeqCst)
+                .offset((b * T * V) as isize)
+                .offset((t * V) as isize);
 
             let mut maxval: f32 = -10000.0f32;
             (0..V).into_iter().for_each(|i| {
@@ -720,15 +737,16 @@ pub unsafe extern "C" fn softmax_forward(
 
             let mut sum: f32 = 0.0f32;
             (0..V).into_iter().for_each(|i_0| {
-                *probs_bt.offset(i_0 as isize) = expf(*logits_bt.offset(i_0 as isize) - maxval);
+                *probs_bt.offset(i_0 as isize) =
+                    expf(*logits_bt.offset(i_0 as isize) - maxval);
                 sum += *probs_bt.offset(i_0 as isize);
             });
 
             (0..V).into_iter().for_each(|i_1| {
                 *probs_bt.offset(i_1 as isize) /= sum;
             });
-        }
-    }
+        });
+    });
 }
 
 pub unsafe extern "C" fn crossentropy_forward(

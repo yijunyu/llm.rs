@@ -39,4 +39,4 @@ Furthermore, we use Mate to convert some of these for loops into iter() function
 In this way, the resulting code has 39.501s per step, or 10% better performance than the vanilla for loops. 
 
 ## Post Code Restructuring
-11.431s on average per step
+8.358s on average per step
