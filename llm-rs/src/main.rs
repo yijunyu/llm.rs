@@ -356,6 +356,43 @@ pub unsafe extern "C" fn layernorm_backward(
     }
 }
 
+pub unsafe extern "C" fn matmul_forward_naive(
+    out: *mut f32,
+    inp: *const f32,
+    weight: *const f32,
+    bias: *const f32,
+    B: i32,
+    T: i32,
+    C: i32,
+    OC: i32,
+) {
+    let out_ptr = AtomicPtr::new(out);
+    let inp_ptr = AtomicPtr::new(inp as *mut f32);
+    let weight_ptr = AtomicPtr::new(weight as *mut f32);
+    let bias_ptr = AtomicPtr::new(bias as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let bt = b * T + t;
+            let out_bt = out_ptr.load(Ordering::SeqCst).offset((bt * OC) as isize);
+            for o in 0..OC {
+                let mut val = if !bias_ptr.load(Ordering::SeqCst).is_null() {
+                    *bias_ptr.load(Ordering::SeqCst).offset(o as isize)
+                } else {
+                    0.0
+                };
+
+                for i in 0..C {
+                    val += *inp_ptr.load(Ordering::SeqCst).offset((bt * C + i) as isize)
+                        * *weight_ptr.load(Ordering::SeqCst).offset((o * C + i) as isize);
+                }
+
+                *out_bt.offset(o as isize) = val;
+            }
+        });
+    });
+}
+
 pub unsafe extern "C" fn matmul_forward(
     mut out: *mut f32,
     mut inp: *mut f32,
@@ -366,39 +403,40 @@ pub unsafe extern "C" fn matmul_forward(
     mut C: i32,
     mut OC: i32,
 ) {
-    let out = AtomicPtr::new(out);
-    let inp = AtomicPtr::new(inp);
-    let weight = AtomicPtr::new(weight);
-    let bias = AtomicPtr::new(bias);
+    const LOOP_UNROLL: i32 = 8;
 
-    (0..B).into_par_iter().for_each(|b| {
-        (0..T).into_par_iter().for_each(|t| {
-            let out_bt: *mut f32 = out
-                .load(Ordering::SeqCst)
-                .offset((b * T * OC) as isize)
-                .offset((t * OC) as isize);
-            let inp_bt: *mut f32 = inp
-                .load(Ordering::SeqCst)
-                .offset((b * T * C) as isize)
-                .offset((t * C) as isize);
+    if B * T % LOOP_UNROLL != 0 {
+        matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
+        return;
+    }
 
-            for o in 0..OC {
-                let val: f32 = if !bias.load(Ordering::SeqCst).is_null() {
-                    *bias.load(Ordering::SeqCst).offset(o as isize)
-                } else {
-                    0.0f32
-                };
+    let out_ptr = AtomicPtr::new(out);
+    let inp_ptr = AtomicPtr::new(inp as *mut f32);
+    let weight_ptr = AtomicPtr::new(weight as *mut f32);
+    let bias_ptr = AtomicPtr::new(bias as *mut f32);
 
-                let wrow: *mut f32 = weight.load(Ordering::SeqCst).offset((o * C) as isize);
-                let mut sum: f32 = val;
-
-                (0..C).into_iter().for_each(|i| {
-                    sum += *inp_bt.offset(i as isize) * *wrow.offset(i as isize);
-                });
-
-                *out_bt.offset(o as isize) = sum;
+    (0..B * T / LOOP_UNROLL).into_par_iter().for_each(|obt| {
+        for o in 0..OC {
+            let mut result: [f32; LOOP_UNROLL as usize] = [0.0; LOOP_UNROLL as usize];
+            if !bias_ptr.load(Ordering::SeqCst).is_null() {
+                for ibt in 0..LOOP_UNROLL {
+                    result[ibt as usize] = *bias_ptr.load(Ordering::SeqCst).offset(o as isize);
+                }
             }
-        });
+
+            for i in 0..C {
+                let w = *weight_ptr.load(Ordering::SeqCst).offset((i + o * C) as isize);
+                for ibt in 0..LOOP_UNROLL {
+                    let bt = obt * LOOP_UNROLL + ibt;
+                    result[ibt as usize] += *inp_ptr.load(Ordering::SeqCst).offset((bt * C + i) as isize) * w;
+                }
+            }
+
+            for ibt in 0..LOOP_UNROLL {
+                let bt = obt * LOOP_UNROLL + ibt;
+                *out_ptr.load(Ordering::SeqCst).offset((bt * OC + o) as isize) = result[ibt as usize];
+            }
+        }
     });
 }
 
@@ -414,56 +452,46 @@ pub unsafe extern "C" fn matmul_backward(
     mut C: i32,
     mut OC: i32,
 ) {
-    let dinp = AtomicPtr::new(dinp);
-    let dweight = AtomicPtr::new(dweight);
-    let dbias = AtomicPtr::new(dbias);
-    let dout = AtomicPtr::new(dout);
-    let inp = AtomicPtr::new(inp);
-    let weight = AtomicPtr::new(weight);
+    let dinp_ptr = AtomicPtr::new(dinp);
+    let dweight_ptr = AtomicPtr::new(dweight);
+    let dbias_ptr = AtomicPtr::new(dbias);
+    let dout_ptr = AtomicPtr::new(dout as *mut f32);
+    let inp_ptr = AtomicPtr::new(inp as *mut f32);
+    let weight_ptr = AtomicPtr::new(weight as *mut f32);
 
+    // Backward into inp first, parallelize over B,T
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let dout_bt: *mut f32 = dout
-                .load(Ordering::SeqCst)
-                .offset((b * T * OC) as isize)
-                .offset((t * OC) as isize);
-            let dinp_bt: *mut f32 = dinp
-                .load(Ordering::SeqCst)
-                .offset((b * T * C) as isize)
-                .offset((t * C) as isize);
+            let dout_bt = dout_ptr.load(Ordering::SeqCst).offset((b * T * OC + t * OC) as isize);
+            let dinp_bt = dinp_ptr.load(Ordering::SeqCst).offset((b * T * C + t * C) as isize);
 
             for o in 0..OC {
-                let wrow: *mut f32 = weight.load(Ordering::SeqCst).offset((o * C) as isize);
-                let d: f32 = *dout_bt.offset(o as isize);
+                let wrow = weight_ptr.load(Ordering::SeqCst).offset((o * C) as isize);
+                let d = *dout_bt.offset(o as isize);
 
-                (0..C).into_iter().for_each(|i| {
+                for i in 0..C {
                     *dinp_bt.offset(i as isize) += *wrow.offset(i as isize) * d;
-                });
+                }
             }
         });
     });
 
-    (0..OC).into_par_iter().for_each(|o_0| {
-        for b_0 in 0..B {
-            for t_0 in 0..T {
-                let dout_bt_0: *mut f32 = dout
-                    .load(Ordering::SeqCst)
-                    .offset((b_0 * T * OC) as isize)
-                    .offset((t_0 * OC) as isize);
-                let inp_bt: *mut f32 = inp
-                    .load(Ordering::SeqCst)
-                    .offset((b_0 * T * C) as isize)
-                    .offset((t_0 * C) as isize);
-                let dwrow: *mut f32 = dweight.load(Ordering::SeqCst).offset((o_0 * C) as isize);
-                let d_0: f32 = *dout_bt_0.offset(o_0 as isize);
+    // Backward into weight/bias, parallelize over output channels OC
+    (0..OC).into_par_iter().for_each(|o| {
+        for b in 0..B {
+            for t in 0..T {
+                let dout_bt = dout_ptr.load(Ordering::SeqCst).offset((b * T * OC + t * OC) as isize);
+                let inp_bt = inp_ptr.load(Ordering::SeqCst).offset((b * T * C + t * C) as isize);
+                let dwrow = dweight_ptr.load(Ordering::SeqCst).offset((o * C) as isize);
+                let d = *dout_bt.offset(o as isize);
 
-                if !dbias.load(Ordering::SeqCst).is_null() {
-                    *dbias.load(Ordering::SeqCst).offset(o_0 as isize) += d_0;
+                if !dbias_ptr.load(Ordering::SeqCst).is_null() {
+                    *dbias_ptr.load(Ordering::SeqCst).offset(o as isize) += d;
                 }
 
-                (0..C).into_iter().for_each(|i_0| {
-                    *dwrow.offset(i_0 as isize) += *inp_bt.offset(i_0 as isize) * d_0;
-                });
+                for i in 0..C {
+                    *dwrow.offset(i as isize) += *inp_bt.offset(i as isize) * d;
+                }
             }
         }
     });
