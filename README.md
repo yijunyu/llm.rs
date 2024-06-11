@@ -6,21 +6,21 @@ Migration of Karpathy's [llm.c](https://github.com/karpathy/llm.c) project into 
 
 The development steps taken to migrate llm.c into Rust
 
-### Utilizing [c2rust](https://github.com/immunant)
+### 1. Utilizing [c2rust](https://github.com/immunant)
 
 Using c2rust, train_gpt2.c was translated from Karpathy's [llm.c](https://github.com/karpathy/llm.c) project to Rust.
 
-### Utilizing [GPT4](https://chat.openai.com)
+### 2. Utilizing [GPT4](https://chat.openai.com)
 
 Although the transpilation of c2rust was successful, all the for loops have been turned into while loops.
 
 Using GPT-4, we are able to convert all the while loops back into for loops.
 
-### Utilizing [Mate](https://github.com/trusted-programming/mate)
+### 3. Utilizing [Mate](https://github.com/trusted-programming/mate)
 
 Furthermore, using Mate, we converted some of these for loops into iter() functions using the Rayon library.
 
-### Manual Updates
+### 4. Manual Updates
 
 Currently, the project is undergoing manual updates to find performance improvements
 
@@ -35,13 +35,13 @@ The system that all the testing is done on is an Intel Core i7-9700 8-core CPU. 
 Install python dependencies, output tokenized dataset:
 
 ```bash
-	make setup
+make setup
 ```
 
 Run the training script:
 
 ```bash
-    make train
+make train
 ```
 
 This will run `cargo build --release` from the llm-rs cargo project after which the binary will be copied into the main project folder.
