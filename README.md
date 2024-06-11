@@ -42,6 +42,6 @@ This will run `cargo build --release` from the llm-rs cargo project after which 
 
 ## TODO
 
-- [] Migrate the testing script
-- [] Fix tinystories dataset download
-- [] Implement SIMD for improved speed
+- [ ] Migrate the testing script
+- [ ] Fix tinystories dataset download
+- [ ] Implement SIMD for improved speed
