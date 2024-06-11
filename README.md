@@ -32,7 +32,7 @@ The system that all the testing is done on is an Intel Core i7-9700 8-core CPU. 
 
 ## Quick Start
 
-Install python dependencies, output tokenized dataset:
+Install python dependencies, output tokenized dataset, and load in the weights:
 
 ```bash
 make setup

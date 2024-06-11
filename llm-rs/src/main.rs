@@ -2021,12 +2021,12 @@ unsafe fn main_0() -> i32 {
     };
     gpt2_build_from_checkpoint(&mut model, b"gpt2_124M.bin\0" as *const u8 as *const u8);
     let mut tiny_stories_train: *const u8 =
-        b"data/TinyStories_train.bin\0" as *const u8 as *const u8;
-    let mut tiny_stories_val: *const u8 = b"data/TinyStories_val.bin\0" as *const u8 as *const u8;
+        b"data/tinystories/TinyStories_train.bin\0" as *const u8 as *const u8;
+    let mut tiny_stories_val: *const u8 = b"data/tinystories/TinyStories_val.bin\0" as *const u8 as *const u8;
     let mut tiny_shakespeare_train: *const u8 =
-        b"data/tiny_shakespeare_train.bin\0" as *const u8 as *const u8;
+        b"data/tinyshakespeare/tiny_shakespeare_train.bin\0" as *const u8 as *const u8;
     let mut tiny_shakespeare_val: *const u8 =
-        b"data/tiny_shakespeare_val.bin\0" as *const u8 as *const u8;
+        b"data/tinyshakespeare/tiny_shakespeare_val.bin\0" as *const u8 as *const u8;
     let mut train_tokens: *const u8 = if access(tiny_shakespeare_train, 0 as i32) != -(1 as i32) {
         tiny_shakespeare_train
     } else {
