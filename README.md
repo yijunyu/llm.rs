@@ -6,21 +6,27 @@ Migration of Karpathy's [llm.c](https://github.com/karpathy/llm.c) project into 
 
 The development steps taken to migrate llm.c into Rust
 
-1. Using [c2rust](https://github.com/immunant), we first translated the train_gpt2.c from Karpathy's [llm.c](https://github.com/karpathy/llm.c) project to Rust.
+### Utilizing [c2rust](https://github.com/immunant)
 
-2. Using [GPT4](https://chat.openai.com) for correction.
+Using c2rust, train_gpt2.c was translated from Karpathy's [llm.c](https://github.com/karpathy/llm.c) project to Rust.
+
+### Utilizing [GPT4](https://chat.openai.com)
 
 Although the transpilation of c2rust was successful, all the for loops have been turned into while loops.
 
 Using GPT-4, we are able to convert all the while loops back into for loops.
 
-3. Using [Mate](https://github.com/trusted-programming/mate)
+### Utilizing [Mate](https://github.com/trusted-programming/mate)
 
-Furthermore, we use Mate to convert some of these for loops into iter() functions using the Rayon library.
+Furthermore, using Mate, we converted some of these for loops into iter() functions using the Rayon library.
+
+### Manual Updates
+
+Currently, the project is undergoing manual updates to find performance improvements
 
 ## Performance
 
-The system that all my testing is done is an Intel Core i7-9700 8-core. Currently our implementation is still slower than the C version on this system which can be seen from the breakdown below:
+The system that all the testing is done on is an Intel Core i7-9700 8-core CPU. Currently this implementation is still slower than the C version on this system which can be seen from the breakdown below:
 - Rust: 6.038s on average per step
 - C: 2.447s on average per step
 
