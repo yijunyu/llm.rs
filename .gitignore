@@ -1,5 +1,5 @@
 /llm-rs/target
 .vscode/
-data/
-gpt2_124M.bin
-gpt2_124M_debug_state.bin
+/data/tinyshakespeare
+/data/tinystories
+gpt2_*
