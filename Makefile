@@ -6,7 +6,9 @@ install:
 preprocess:
 	python prepro_tinyshakespeare.py
 
-train:	llm-rs/src/main.rs
+train:
+	python train_gpt2.py
+	llm-rs/src/main.rs
 	cd llm-rs && cargo build --release && cp target/release/llm-rs ../train_gpt2_rs
 
 setup:	install preprocess
