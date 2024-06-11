@@ -27,8 +27,8 @@ Currently, the project is undergoing manual updates to find performance improvem
 ## Performance
 
 The system that all the testing is done on is an Intel Core i7-9700 8-core CPU. Currently this implementation is still slower than the C version on this system which can be seen from the breakdown below:
-- Rust: 6.038s on average per step
-- C: 2.447s on average per step
+- **Rust**: **6.038s** on average per step
+- **C**: **2.447s** on average per step
 
 ## Quick Start
 
