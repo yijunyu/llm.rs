@@ -48,6 +48,10 @@ This will run `cargo build --release` from the llm-rs cargo project after which 
 
 ## TODO
 
+- [ ] Fix types to remove unnecessary casts
+- [ ] Restructure the training script for improved readability
+- [ ] Implement the latest version of the tokenizer
+- [ ] Implement the latest version of the data loader
 - [ ] Migrate the testing script
 - [ ] Fix tinystories dataset download
 - [ ] Implement SIMD for improved speed
