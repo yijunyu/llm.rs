@@ -208,7 +208,6 @@ pub struct Tokenizer {
     pub vocab_size: uint32_t,
     pub token_table: *mut *mut u8,
     pub init_ok: i32,
-    pub eot_token: u32,
 }
 
 pub unsafe extern "C" fn encoder_forward(
@@ -1754,141 +1753,161 @@ pub unsafe extern "C" fn safe_printf(mut piece: *const u8) {
     if piece.is_null() {
         return;
     }
-    if *piece == b'\0' {
+    if *piece.offset(0 as i32 as isize) as i32 == '\0' as i32 {
         return;
     }
-    if *piece.offset(1) == b'\0' {
-        let byte_val = *piece as u8;
-        if !(*(*__ctype_b_loc()).offset(byte_val as isize) as i32
+    if *piece.offset(1 as i32 as isize) as i32 == '\0' as i32 {
+        let mut byte_val: u8 = *piece.offset(0 as i32 as isize) as u8;
+        if !(*(*__ctype_b_loc()).offset(byte_val as i32 as isize) as i32
             & _ISprint as i32 as u16 as i32
             != 0
-            || *(*__ctype_b_loc()).offset(byte_val as isize) as i32
+            || *(*__ctype_b_loc()).offset(byte_val as i32 as isize) as i32
                 & _ISspace as i32 as u16 as i32
                 != 0)
         {
             return;
         }
     }
-    printf(b"%s\0" as *const u8, piece);
+    printf(b"%s\0" as *const u8 as *const u8, piece);
 }
 
 pub unsafe extern "C" fn tokenizer_init(mut tokenizer: *mut Tokenizer, mut filename: *const u8) {
-    let file = fopen(filename, b"rb\0" as *const u8);
+    let mut file: *mut FILE = fopen(filename, b"rb\0" as *const u8 as *const u8);
     if file.is_null() {
-        printf(b"---\n\0" as *const u8);
+        printf(b"---\n\0" as *const u8 as *const u8);
         printf(
-            b"WARNING: Failed to open the tokenizer file %s\n\0" as *const u8,
+            b"WARNING: Failed to open the tokenizer file %s\n\0" as *const u8 as *const u8,
             filename,
         );
-        printf(b"The Tokenizer is a new feature added April 14 2024.\n\0" as *const u8);
-        printf(b"Re-run `python train_gpt2.py` to write it\n\0" as *const u8);
-        printf(b"---\n\0" as *const u8);
-        (*tokenizer).init_ok = 0;
+        printf(
+            b"The Tokenizer is a new feature added April 14 2024.\n\0" as *const u8 as *const u8,
+        );
+        printf(b"Re-run `python train_gpt2.py` to write it\n\0" as *const u8 as *const u8);
+        printf(b"---\n\0" as *const u8 as *const u8);
+        (*tokenizer).init_ok = 0 as i32;
         return;
     }
-
-    let mut header: [u32; 256] = [0; 256];
-    freadCheck(
-        header.as_mut_ptr() as *mut _,
-        std::mem::size_of::<u32>() as u64,
-        256,
+    let mut header: [uint32_t; 256] = [0; 256];
+    fread(
+        header.as_mut_ptr() as *mut usize,
+        ::core::mem::size_of::<uint32_t>() as u64,
+        256 as i32 as u64,
         file,
     );
-
-    assert!(header[0] == 20240328);
-    let version = header[1];
-    (*tokenizer).vocab_size = header[2];
-    if version == 1 {
-        assert!((*tokenizer).vocab_size == 50257);
-        (*tokenizer).eot_token = 50256;
-    } else if version == 2 {
-        (*tokenizer).eot_token = header[3];
+    if header[0 as i32 as usize] == 20240328 as i32 as u32 {
     } else {
-        printf(b"Tokenizer model file has bad version\n\0" as *const u8);
-        return;
+        __assert_fail(
+            b"header[0] == 20240328\0" as *const u8 as *const u8,
+            b"/home/linuxohos/demo2/train_gpt2.c\0" as *const u8 as *const u8,
+            1105 as i32 as u32,
+            (*::core::mem::transmute::<&[u8; 47], &[u8; 47]>(
+                b"void tokenizer_init(Tokenizer *, const char *)\0",
+            ))
+            .as_ptr(),
+        );
     }
-
+    'c_12277: {
+        if header[0 as i32 as usize] == 20240328 as i32 as u32 {
+        } else {
+            __assert_fail(
+                b"header[0] == 20240328\0" as *const u8 as *const u8,
+                b"/home/linuxohos/demo2/train_gpt2.c\0" as *const u8 as *const u8,
+                1105 as i32 as u32,
+                (*::core::mem::transmute::<&[u8; 47], &[u8; 47]>(
+                    b"void tokenizer_init(Tokenizer *, const char *)\0",
+                ))
+                .as_ptr(),
+            );
+        }
+    };
+    if header[1 as i32 as usize] == 1 as i32 as u32 {
+    } else {
+        __assert_fail(
+            b"header[1] == 1\0" as *const u8 as *const u8,
+            b"/home/linuxohos/demo2/train_gpt2.c\0" as *const u8 as *const u8,
+            1106 as i32 as u32,
+            (*::core::mem::transmute::<&[u8; 47], &[u8; 47]>(
+                b"void tokenizer_init(Tokenizer *, const char *)\0",
+            ))
+            .as_ptr(),
+        );
+    }
+    'c_12233: {
+        if header[1 as i32 as usize] == 1 as i32 as u32 {
+        } else {
+            __assert_fail(
+                b"header[1] == 1\0" as *const u8 as *const u8,
+                b"/home/linuxohos/demo2/train_gpt2.c\0" as *const u8 as *const u8,
+                1106 as i32 as u32,
+                (*::core::mem::transmute::<&[u8; 47], &[u8; 47]>(
+                    b"void tokenizer_init(Tokenizer *, const char *)\0",
+                ))
+                .as_ptr(),
+            );
+        }
+    };
+    (*tokenizer).vocab_size = header[2 as i32 as usize];
     let mut length: u8 = 0;
-    (*tokenizer).token_table = mallocCheck(
-        ((*tokenizer).vocab_size as u64)
-            .wrapping_mul(std::mem::size_of::<*mut u8>() as u64),
+    (*tokenizer).token_table = malloc(
+        ((*tokenizer).vocab_size as u64).wrapping_mul(::core::mem::size_of::<*mut u8>() as u64),
     ) as *mut *mut u8;
-
-    for i in 0..(*tokenizer).vocab_size {
-        freadCheck(
+    (0..(*tokenizer).vocab_size).into_iter().for_each(|i| {
+        let mut length: u8 = 0;
+        fread(
             &mut length as *mut u8 as *mut _,
-            std::mem::size_of::<u8>() as u64,
+            ::core::mem::size_of::<u8>() as u64,
             1,
             file,
         );
-        assert!(length > 0);
+        assert!(length > 0, "length must be greater than 0");
 
-        let token_bytes = mallocCheck((length as usize + 1) as u64) as *mut u8;
+        // Allocate memory for the token plus a null terminator
+        let token_bytes = unsafe { malloc((length as usize + 1) as u64) as *mut u8 };
         if token_bytes.is_null() {
             panic!("Failed to allocate memory for token_bytes");
         }
 
-        freadCheck(
+        // Read the token data into the allocated buffer
+        fread(
             token_bytes as *mut _,
-            std::mem::size_of::<u8>() as u64,
+            ::core::mem::size_of::<u8>() as u64,
             length as u64,
             file,
         );
-        *token_bytes.offset(length as isize) = b'\0';
-        *(*tokenizer).token_table.offset(i as isize) = token_bytes;
-    }
+        *token_bytes.offset(length as isize) = b'\0'; // Append null terminator
+        *((*tokenizer).token_table.offset(i as isize)) = token_bytes;
+    });
 
-    fcloseCheck(file);
-    (*tokenizer).init_ok = 1;
+    fclose(file);
+    (*tokenizer).init_ok = 1 as i32;
 }
 
 pub unsafe extern "C" fn tokenizer_decode(
     mut tokenizer: *mut Tokenizer,
     mut token_id: uint32_t,
 ) -> *const u8 {
-    if (*tokenizer).init_ok == 0 {
-        return std::ptr::null();
+    if (*tokenizer).init_ok == 0 as i32 {
+        return 0 as *const u8;
     }
     if token_id < (*tokenizer).vocab_size {
-        return *(*tokenizer).token_table.offset(token_id as isize);
+        return *((*tokenizer).token_table).offset(token_id as isize);
     } else {
         printf(
-            b"invalid token id %u!\n\0" as *const u8,
+            b"invalid token id %d!\n\0" as *const u8 as *const u8,
             token_id,
         );
-        return std::ptr::null();
-    }
+        return 0 as *const u8;
+    };
 }
 
 pub unsafe extern "C" fn tokenizer_free(mut tokenizer: *mut Tokenizer) {
     if (*tokenizer).init_ok != 0 {
-        for i in 0..(*tokenizer).vocab_size as usize {
-            free(*(*tokenizer).token_table.offset(i as isize) as *mut _);
-        }
-        free((*tokenizer).token_table as *mut _);
+        (0..(*tokenizer).vocab_size as usize).into_iter().for_each(|i| {
+            free(*((*tokenizer).token_table.offset(i as isize)) as *mut usize);
+        });
+        free((*tokenizer).token_table as *mut usize);
     }
 }
-
-unsafe fn freadCheck(ptr: *mut u8, size: u64, count: u64, stream: *mut FILE) {
-    if fread(ptr as *mut _, size, count, stream) != count {
-        panic!("fread failed");
-    }
-}
-
-unsafe fn fcloseCheck(stream: *mut FILE) {
-    if fclose(stream) != 0 {
-        panic!("fclose failed");
-    }
-}
-
-unsafe fn mallocCheck(size: u64) -> *mut u8 {
-    let ptr = malloc(size) as *mut u8;
-    if ptr.is_null() {
-        panic!("malloc failed");
-    }
-    ptr
-}
-
 unsafe fn main_0() -> i32 {
     let mut model: GPT2 = GPT2 {
         config: GPT2Config {
@@ -2057,7 +2076,6 @@ unsafe fn main_0() -> i32 {
         vocab_size: 0,
         token_table: 0 as *mut *mut u8,
         init_ok: 0,
-        eot_token: 0,
     };
     tokenizer_init(
         &mut tokenizer,
