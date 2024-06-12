@@ -1,5 +1,4 @@
 /llm-rs/target
 .vscode/
-/data/tinyshakespeare
-/data/tinystories
+data
 gpt2_*
