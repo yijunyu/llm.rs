@@ -7,15 +7,14 @@
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types, label_break_value)]
+
+use std::f32::EPSILON;
+use std::f32::consts::PI;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 #[allow(unused_imports)]
 use rayon::prelude::*;
 extern "C" {
-    pub type _IO_wide_data;
-    pub type _IO_codecvt;
-    pub type _IO_marker;
     static mut stdout: *mut FILE;
     fn fclose(__stream: *mut FILE) -> i32;
     fn fflush(__stream: *mut FILE) -> i32;
@@ -68,7 +67,6 @@ pub struct _IO_FILE {
     pub _IO_save_base: *mut u8,
     pub _IO_backup_base: *mut u8,
     pub _IO_save_end: *mut u8,
-    pub _markers: *mut _IO_marker,
     pub _chain: *mut _IO_FILE,
     pub _fileno: i32,
     pub _flags2: i32,
@@ -78,8 +76,6 @@ pub struct _IO_FILE {
     pub _shortbuf: [u8; 1],
     pub _lock: *mut usize,
     pub _offset: __off64_t,
-    pub _codecvt: *mut _IO_codecvt,
-    pub _wide_data: *mut _IO_wide_data,
     pub _freeres_list: *mut _IO_FILE,
     pub _freeres_buf: *mut usize,
     pub __pad5: size_t,
@@ -210,529 +206,570 @@ pub struct Tokenizer {
     pub init_ok: i32,
 }
 
-pub unsafe extern "C" fn encoder_forward(
-    mut out: *mut f32,
-    mut inp: *mut i32,
-    mut wte: *mut f32,
-    mut wpe: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
+pub unsafe fn encoder_forward(
+    out: *mut f32,
+    inp: *const i32,
+    wte: *const f32,
+    wpe: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
 ) {
+    // out is (B,T,C). At each position (b,t), a C-dimensional vector summarizing token & position
+    // inp is (B,T) of integers, holding the token ids at each (b,t) position
+    // wte is (V,C) of token embeddings, short for "weight token embeddings"
+    // wpe is (maxT,C) of position embeddings, short for "weight positional embedding"
+
+    // Iterate over the batch dimension
     for b in 0..B {
+        // Iterate over the sequence length
         for t in 0..T {
-            let mut out_bt: *mut f32 = out.offset((b * T * C) as isize).offset((t * C) as isize);
-            let ix: i32 = *inp.offset((b * T + t) as isize);
-            let wte_ix: *mut f32 = wte.offset((ix * C) as isize);
-            let wpe_t: *mut f32 = wpe.offset((t * C) as isize);
-            (0..C).into_iter().for_each(|i| {
-                *out_bt.offset(i as isize) = *wte_ix.offset(i as isize) + *wpe_t.offset(i as isize);
-            });
+            // Calculate the base address for out[b,t,:]
+            let out_bt = out.add(b * T * C + t * C);
+            // Get the token index at inp[b, t]
+            let ix = *inp.add(b * T + t) as usize;
+            // Calculate the base address for wte[ix,:]
+            let wte_ix = wte.add(ix * C);
+            // Calculate the base address for wpe[t,:]
+            let wpe_t = wpe.add(t * C);
+            // Sum the token and position embeddings and store the result in out[b,t,:]
+            for i in 0..C {
+                *out_bt.add(i) = *wte_ix.add(i) + *wpe_t.add(i);
+            }
         }
     }
 }
 
-pub unsafe extern "C" fn encoder_backward(
-    mut dwte: *mut f32,
-    mut dwpe: *mut f32,
-    mut dout: *mut f32,
-    mut inp: *mut i32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
+pub unsafe fn encoder_backward(
+    dwte: *mut f32,
+    dwpe: *mut f32,
+    dout: *const f32,
+    inp: *const i32,
+    B: usize,
+    T: usize,
+    C: usize,
 ) {
+    // Iterate over the batch dimension
     for b in 0..B {
+        // Iterate over the sequence length
         for t in 0..T {
-            let mut dout_bt: *mut f32 = dout.offset((b * T * C) as isize).offset((t * C) as isize);
-            let ix: i32 = *inp.offset((b * T + t) as isize);
-            let mut dwte_ix: *mut f32 = dwte.offset((ix * C) as isize);
-            let mut dwpe_t: *mut f32 = dwpe.offset((t * C) as isize);
-            (0..C).into_iter().for_each(|i| {
-                let d: f32 = *dout_bt.offset(i as isize);
-                *dwte_ix.offset(i as isize) += d;
-                *dwpe_t.offset(i as isize) += d;
-            });
+            // Calculate the base address for dout[b,t,:]
+            let dout_bt = dout.add(b * T * C + t * C);
+            // Get the token index at inp[b, t]
+            let ix = *inp.add(b * T + t) as usize;
+            // Calculate the base address for dwte[ix,:]
+            let dwte_ix = dwte.add(ix * C);
+            // Calculate the base address for dwpe[t,:]
+            let dwpe_t = dwpe.add(t * C);
+            // Backpropagate the gradients
+            for i in 0..C {
+                let d = *dout_bt.add(i);
+                *dwte_ix.add(i) += d;
+                *dwpe_t.add(i) += d;
+            }
         }
     }
 }
 
-pub unsafe extern "C" fn layernorm_forward(
-    mut out: *mut f32,
-    mut mean: *mut f32,
-    mut rstd: *mut f32,
-    mut inp: *mut f32,
-    mut weight: *mut f32,
-    mut bias: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
+pub unsafe fn layernorm_forward(
+    out: *mut f32,
+    mean: *mut f32,
+    rstd: *mut f32,
+    inp: *const f32,
+    weight: *const f32,
+    bias: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
 ) {
-    let mut eps: f32 = 1e-5f32;
+    // reference: https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html
+    // both inp and out are (B,T,C) of the activations
+    // mean and rstd are (B,T) buffers, to be used later in backward pass
+    // at each position (b,t) of the input, the C-dimensional vector
+    // of activations gets normalized, then scaled and shifted
     for b in 0..B {
+        // Iterate over the sequence length
         for t in 0..T {
-            let mut x: *mut f32 = inp.offset((b * T * C) as isize).offset((t * C) as isize);
+            // Calculate the base address for inp[b,t,:]
+            let x = inp.add(b * T * C + t * C);
+            // Initialize mean and variance
+            let mut m = 0.0f32;
+            let mut v = 0.0f32;
 
-            // Compute the mean
-            let mut m: f32 = 0.0;
-            (0..C).into_iter().for_each(|i| {
-                m += *x.offset(i as isize);
-            });
+            // Calculate the mean
+            for i in 0..C {
+                m += *x.add(i);
+            }
             m /= C as f32;
 
-            // Compute the variance
-            let mut v: f32 = 0.0;
-            (0..C).into_iter().for_each(|i_0| {
-                let xshift: f32 = *x.offset(i_0 as isize) - m;
+            // Calculate the variance (without bias correction)
+            for i in 0..C {
+                let xshift = *x.add(i) - m;
                 v += xshift * xshift;
-            });
+            }
             v /= C as f32;
 
-            // Compute the standard deviation
-            let s: f32 = 1.0 / (v + eps).sqrt();
+            // Calculate the rstd (reciprocal standard deviation)
+            let s = 1.0f32 / (v + EPSILON).sqrt();
 
-            // Apply normalization, scale by weight, add bias, and write to output
-            let mut out_bt: *mut f32 = out.offset((b * T * C) as isize).offset((t * C) as isize);
-            (0..C).into_iter().for_each(|i_1| {
-                let n: f32 = s * (*x.offset(i_1 as isize) - m);
-                let o: f32 = n * *weight.offset(i_1 as isize) + *bias.offset(i_1 as isize);
-                *out_bt.offset(i_1 as isize) = o;
-            });
+            // Calculate the base address for out[b,t,:]
+            let out_bt = out.add(b * T * C + t * C);
+            // Apply normalization, scaling, and shifting
+            for i in 0..C {
+                let n = s * (*x.add(i) - m); // normalize
+                let o = n * *weight.add(i) + *bias.add(i); // scale and shift
+                *out_bt.add(i) = o; // write
+            }
 
-            // Save the computed mean and reciprocal of standard deviation
-            *mean.offset((b * T + t) as isize) = m;
-            *rstd.offset((b * T + t) as isize) = s;
+            // Cache the mean and rstd for the backward pass later
+            *mean.add(b * T + t) = m;
+            *rstd.add(b * T + t) = s;
         }
     }
 }
 
-pub unsafe extern "C" fn layernorm_backward(
-    mut dinp: *mut f32,
-    mut dweight: *mut f32,
-    mut dbias: *mut f32,
-    mut dout: *mut f32,
-    mut inp: *mut f32,
-    mut weight: *mut f32,
-    mut mean: *mut f32,
-    mut rstd: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
+pub unsafe fn layernorm_backward(
+    dinp: *mut f32,
+    dweight: *mut f32,
+    dbias: *mut f32,
+    dout: *const f32,
+    inp: *const f32,
+    weight: *const f32,
+    mean: *const f32,
+    rstd: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
 ) {
+    // Iterate over the batch dimension
     for b in 0..B {
+        // Iterate over the sequence length
         for t in 0..T {
-            let mut dout_bt: *mut f32 = dout.offset((b * T * C) as isize).offset((t * C) as isize);
-            let mut inp_bt: *mut f32 = inp.offset((b * T * C) as isize).offset((t * C) as isize);
-            let mut dinp_bt: *mut f32 = dinp.offset((b * T * C) as isize).offset((t * C) as isize);
-            let mean_bt: f32 = *mean.offset((b * T + t) as isize);
-            let rstd_bt: f32 = *rstd.offset((b * T + t) as isize);
+            // Calculate the base addresses for dout, inp, and dinp at (b,t)
+            let dout_bt = dout.add(b * T * C + t * C);
+            let inp_bt = inp.add(b * T * C + t * C);
+            let dinp_bt = dinp.add(b * T * C + t * C);
+            let mean_bt = *mean.add(b * T + t);
+            let rstd_bt = *rstd.add(b * T + t);
 
-            let mut dnorm_mean: f32 = 0.0;
-            let mut dnorm_norm_mean: f32 = 0.0;
-
-            // Compute intermediate sums
-            (0..C).into_iter().for_each(|i| {
-                let norm_bti: f32 = (*inp_bt.offset(i as isize) - mean_bt) * rstd_bt;
-                let dnorm_i: f32 = *weight.offset(i as isize) * *dout_bt.offset(i as isize);
+            // First: two reduce operations
+            let mut dnorm_mean = 0.0f32;
+            let mut dnorm_norm_mean = 0.0f32;
+            for i in 0..C {
+                let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
+                let dnorm_i = *weight.add(i) * *dout_bt.add(i);
                 dnorm_mean += dnorm_i;
                 dnorm_norm_mean += dnorm_i * norm_bti;
-            });
-
+            }
             dnorm_mean /= C as f32;
             dnorm_norm_mean /= C as f32;
 
-            // Update gradients and normalized inputs
-            (0..C).into_iter().for_each(|i_0| {
-                let norm_bti_0: f32 = (*inp_bt.offset(i_0 as isize) - mean_bt) * rstd_bt;
-                let dnorm_i_0: f32 = *weight.offset(i_0 as isize) * *dout_bt.offset(i_0 as isize);
-
-                *dbias.offset(i_0 as isize) += *dout_bt.offset(i_0 as isize);
-                *dweight.offset(i_0 as isize) += norm_bti_0 * *dout_bt.offset(i_0 as isize);
-
-                let mut dval: f32 = dnorm_i_0 - dnorm_mean - (norm_bti_0 * dnorm_norm_mean);
-                dval *= rstd_bt;
-                *dinp_bt.offset(i_0 as isize) += dval;
-            });
+            // Now iterate again and accumulate all the gradients
+            for i in 0..C {
+                let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
+                let dnorm_i = *weight.add(i) * *dout_bt.add(i);
+                
+                // Gradient contribution to bias
+                *dbias.add(i) += *dout_bt.add(i);
+                
+                // Gradient contribution to weight
+                *dweight.add(i) += norm_bti * *dout_bt.add(i);
+                
+                // Gradient contribution to input
+                let mut dval = 0.0f32;
+                dval += dnorm_i; // term 1
+                dval -= dnorm_mean; // term 2
+                dval -= norm_bti * dnorm_norm_mean; // term 3
+                dval *= rstd_bt; // final scale
+                *dinp_bt.add(i) += dval;
+            }
         }
     }
 }
 
-pub unsafe extern "C" fn matmul_forward_naive(
+pub unsafe fn matmul_forward_naive(
     out: *mut f32,
     inp: *const f32,
     weight: *const f32,
     bias: *const f32,
-    B: i32,
-    T: i32,
-    C: i32,
-    OC: i32,
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
 ) {
-    let out_ptr = AtomicPtr::new(out);
-    let inp_ptr = AtomicPtr::new(inp as *mut f32);
-    let weight_ptr = AtomicPtr::new(weight as *mut f32);
-    let bias_ptr = AtomicPtr::new(bias as *mut f32);
+    // the most naive implementation of matrix multiplication
+    // this serves as an algorithmic reference, and as a fallback for
+    // unfriendly input shapes inside matmul_forward(), below.
+    let out = AtomicPtr::new(out);
+    let inp = AtomicPtr::new(inp as *mut f32);
+    let weight = AtomicPtr::new(weight as *mut f32);
+    let bias = AtomicPtr::new(bias as *mut f32);
 
+    // Create a parallel iterator over the batch dimension
     (0..B).into_par_iter().for_each(|b| {
+        // Create a parallel iterator over the sequence length
         (0..T).into_par_iter().for_each(|t| {
             let bt = b * T + t;
-            let out_bt = out_ptr.load(Ordering::SeqCst).offset((bt * OC) as isize);
+            // Iterate over the output channels
             for o in 0..OC {
-                let mut val = if !bias_ptr.load(Ordering::SeqCst).is_null() {
-                    *bias_ptr.load(Ordering::SeqCst).offset(o as isize)
+                // Initialize the output value with the bias if provided, otherwise 0.0
+                let mut val = if !bias.load(Ordering::SeqCst).is_null() {
+                    *bias.load(Ordering::SeqCst).add(o)
                 } else {
-                    0.0
+                    0.0f32
                 };
-
+                // Perform the dot product
                 for i in 0..C {
-                    val += *inp_ptr.load(Ordering::SeqCst).offset((bt * C + i) as isize)
-                        * *weight_ptr.load(Ordering::SeqCst).offset((o * C + i) as isize);
+                    val += *inp.load(Ordering::SeqCst).add(bt * C + i) * *weight.load(Ordering::SeqCst).add(o * C + i);
                 }
-
-                *out_bt.offset(o as isize) = val;
+                // Store the result
+                *out.load(Ordering::SeqCst).add(bt * OC + o) = val;
             }
         });
     });
 }
 
-pub unsafe extern "C" fn matmul_forward(
-    mut out: *mut f32,
-    mut inp: *mut f32,
-    mut weight: *mut f32,
-    mut bias: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
-    mut OC: i32,
+pub unsafe fn matmul_forward(
+    out: *mut f32,
+    inp: *const f32,
+    weight: *const f32,
+    bias: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
 ) {
-    const LOOP_UNROLL: i32 = 8;
+    // most of the running time is spent here and in matmul_backward
+    // therefore, the implementation below is very mildly optimized
+    // this function is otherwise identical to that of matmul_forward_naive()
+    // OC is short for "output channels"
+    // inp is (B,T,C), weight is (OC, C), bias is (OC)
+    // out will be (B,T,OC)
+    const LOOP_UNROLL: usize = 8;
+    let out = AtomicPtr::new(out);
+    let inp = AtomicPtr::new(inp as *mut f32);
+    let weight = AtomicPtr::new(weight as *mut f32);
+    let bias = AtomicPtr::new(bias as *mut f32);
 
-    if B * T % LOOP_UNROLL != 0 {
-        matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
+    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
+    if (B * T) % LOOP_UNROLL != 0 {
+        matmul_forward_naive(out.load(Ordering::SeqCst), inp.load(Ordering::SeqCst), weight.load(Ordering::SeqCst), bias.load(Ordering::SeqCst), B, T, C, OC);
         return;
     }
 
-    let out_ptr = AtomicPtr::new(out);
-    let inp_ptr = AtomicPtr::new(inp as *mut f32);
-    let weight_ptr = AtomicPtr::new(weight as *mut f32);
-    let bias_ptr = AtomicPtr::new(bias as *mut f32);
-
-    (0..B * T / LOOP_UNROLL).into_par_iter().for_each(|obt| {
+    // Parallelize the outer loop using Rayon
+    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
         for o in 0..OC {
-            let mut result: [f32; LOOP_UNROLL as usize] = [0.0; LOOP_UNROLL as usize];
-            if !bias_ptr.load(Ordering::SeqCst).is_null() {
-                for ibt in 0..LOOP_UNROLL {
-                    result[ibt as usize] = *bias_ptr.load(Ordering::SeqCst).offset(o as isize);
-                }
-            }
-
-            for i in 0..C {
-                let w = *weight_ptr.load(Ordering::SeqCst).offset((i + o * C) as isize);
-                for ibt in 0..LOOP_UNROLL {
-                    let bt = obt * LOOP_UNROLL + ibt;
-                    result[ibt as usize] += *inp_ptr.load(Ordering::SeqCst).offset((bt * C + i) as isize) * w;
-                }
-            }
-
+            // Initialize the result array with bias if present
+            let mut result = [0.0f32; LOOP_UNROLL];
             for ibt in 0..LOOP_UNROLL {
-                let bt = obt * LOOP_UNROLL + ibt;
-                *out_ptr.load(Ordering::SeqCst).offset((bt * OC + o) as isize) = result[ibt as usize];
+                result[ibt] = if !bias.load(Ordering::SeqCst).is_null() { *bias.load(Ordering::SeqCst).add(o) } else { 0.0f32 };
+            }
+
+            // Cache the weight value and compute dot products
+            for i in 0..C {
+                let w = *weight.load(Ordering::SeqCst).add(i + o * C);
+                for ibt in 0..LOOP_UNROLL {
+                    let bt = obt + ibt;
+                    result[ibt] += *inp.load(Ordering::SeqCst).add(bt * C + i) * w;
+                }
+            }
+
+            // Write results back to the output matrix
+            for ibt in 0..LOOP_UNROLL {
+                let bt = obt + ibt;
+                *out.load(Ordering::SeqCst).add(bt * OC + o) = result[ibt];
             }
         }
     });
 }
 
-pub unsafe extern "C" fn matmul_backward(
-    mut dinp: *mut f32,
-    mut dweight: *mut f32,
-    mut dbias: *mut f32,
-    mut dout: *mut f32,
-    mut inp: *mut f32,
-    mut weight: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
-    mut OC: i32,
+pub unsafe fn matmul_backward(
+    dinp: *mut f32,
+    dweight: *mut f32,
+    dbias: *mut f32,
+    dout: *const f32,
+    inp: *const f32,
+    weight: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
 ) {
-    let dinp_ptr = AtomicPtr::new(dinp);
-    let dweight_ptr = AtomicPtr::new(dweight);
-    let dbias_ptr = AtomicPtr::new(dbias);
-    let dout_ptr = AtomicPtr::new(dout as *mut f32);
-    let inp_ptr = AtomicPtr::new(inp as *mut f32);
-    let weight_ptr = AtomicPtr::new(weight as *mut f32);
+    // most of the running time is spent here and in matmul_forward
+    // this backward could be done in a single "round" of loops
+    // but that doesn't afford an efficient parallelization strategy
+    let dinp = AtomicPtr::new(dinp);
+    let dweight = AtomicPtr::new(dweight);
+    let dbias = AtomicPtr::new(dbias);
+    let dout = AtomicPtr::new(dout as *mut f32);
+    let inp = AtomicPtr::new(inp as *mut f32);
+    let weight = AtomicPtr::new(weight as *mut f32);
 
-    // Backward into inp first, parallelize over B,T
+    // Parallelize over B and T for input gradient computation
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let dout_bt = dout_ptr.load(Ordering::SeqCst).offset((b * T * OC + t * OC) as isize);
-            let dinp_bt = dinp_ptr.load(Ordering::SeqCst).offset((b * T * C + t * C) as isize);
-
+            let dout_bt = dout.load(Ordering::SeqCst).add(b * T * OC + t * OC);
+            let dinp_bt = dinp.load(Ordering::SeqCst).add(b * T * C + t * C);
             for o in 0..OC {
-                let wrow = weight_ptr.load(Ordering::SeqCst).offset((o * C) as isize);
-                let d = *dout_bt.offset(o as isize);
-
+                let wrow = weight.load(Ordering::SeqCst).add(o * C);
+                let d = *dout_bt.add(o);
                 for i in 0..C {
-                    *dinp_bt.offset(i as isize) += *wrow.offset(i as isize) * d;
+                    *dinp_bt.add(i) += *wrow.add(i) * d;
                 }
             }
         });
     });
 
-    // Backward into weight/bias, parallelize over output channels OC
+    // Parallelize over output channels for weight and bias gradient computation
     (0..OC).into_par_iter().for_each(|o| {
+        let dwrow = dweight.load(Ordering::SeqCst).add(o * C);
         for b in 0..B {
             for t in 0..T {
-                let dout_bt = dout_ptr.load(Ordering::SeqCst).offset((b * T * OC + t * OC) as isize);
-                let inp_bt = inp_ptr.load(Ordering::SeqCst).offset((b * T * C + t * C) as isize);
-                let dwrow = dweight_ptr.load(Ordering::SeqCst).offset((o * C) as isize);
-                let d = *dout_bt.offset(o as isize);
-
-                if !dbias_ptr.load(Ordering::SeqCst).is_null() {
-                    *dbias_ptr.load(Ordering::SeqCst).offset(o as isize) += d;
+                let dout_bt = dout.load(Ordering::SeqCst).add(b * T * OC + t * OC);
+                let inp_bt = inp.load(Ordering::SeqCst).add(b * T * C + t * C);
+                let d = *dout_bt.add(o);
+                if !dbias.load(Ordering::SeqCst).is_null() {
+                    *dbias.load(Ordering::SeqCst).add(o) += d;
                 }
-
                 for i in 0..C {
-                    *dwrow.offset(i as isize) += *inp_bt.offset(i as isize) * d;
+                    *dwrow.add(i) += *inp_bt.add(i) * d;
                 }
             }
         }
     });
 }
 
-pub unsafe extern "C" fn attention_forward(
-    mut out: *mut f32,
-    mut preatt: *mut f32,
-    mut att: *mut f32,
-    mut inp: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
-    mut NH: i32,
+pub unsafe fn attention_forward(
+    out: *mut f32,
+    preatt: *mut f32,
+    att: *mut f32,
+    inp: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    NH: usize,
 ) {
-    let C3: i32 = C * 3;
-    let hs: i32 = C / NH;
-    let scale: f32 = (1.0f64 / (hs as f32).sqrt() as f64) as f32;
+    // input is (B, T, 3C) holding the query, key, value (Q, K, V) vectors
+    // preatt, att are (B, NH, T, T). NH = number of heads, T = sequence length
+    // that holds the pre-attention and post-attention scores (used in backward)
+    // output is (B, T, C)
+    // attention is the only layer that mixes information across time
+    // every other operation is applied at every (b,t) position independently
+    // (and of course, no layer mixes information across batch)
+    let C3 = C * 3; // feature dimension scaled by 3
+    let hs = C / NH; // head size
+    let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    let out = AtomicPtr::new(out);
-    let preatt = AtomicPtr::new(preatt);
-    let att = AtomicPtr::new(att);
-    let inp = AtomicPtr::new(inp);
+    let mut out = AtomicPtr::new(out);
+    let mut preatt = AtomicPtr::new(preatt);
+    let mut att = AtomicPtr::new(att);
+    let mut inp = AtomicPtr::new(inp as *mut f32);
 
+    // Parallelize the outer loops using Rayon
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
             (0..NH).into_par_iter().for_each(|h| {
-                let query_t = inp
-                    .load(Ordering::SeqCst)
-                    .offset((b * T * C3 + t * C3 + h * hs) as isize);
-                let preatt_bth = preatt
-                    .load(Ordering::SeqCst)
-                    .offset((b * NH * T * T + h * T * T + t * T) as isize);
-                let att_bth = att
-                    .load(Ordering::SeqCst)
-                    .offset((b * NH * T * T + h * T * T + t * T) as isize);
+                // Access pointers for query, preatt, and att
+                let query_t = inp.load(Ordering::SeqCst).add(b * T * C3 + t * C3 + h * hs) ;
+                let preatt_bth = preatt.load(Ordering::SeqCst).add(b * NH * T * T + h * T * T + t * T);
+                let att_bth = att.load(Ordering::SeqCst).add(b * NH * T * T + h * T * T + t * T);
 
-                let mut maxval = -10000.0f32;
-
+                // Pass 1: calculate query dot key and maxval
+                let mut maxval = f32::MIN; // Initialize to the smallest possible value for stability
                 for t2 in 0..=t {
-                    let key_t2 = inp
-                        .load(Ordering::SeqCst)
-                        .offset((b * T * C3 + t2 * C3 + h * hs + C) as isize);
+                    let key_t2 = inp.load(Ordering::SeqCst).add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+
+                    // Calculate dot product (query_t) dot (key_t2)
                     let mut val = 0.0f32;
-                    (0..hs).into_iter().for_each(|i| {
-                        val += *query_t.offset(i as isize) * *key_t2.offset(i as isize);
-                    });
+                    for i in 0..hs {
+                        val += *query_t.add(i) * *key_t2.add(i);
+                    }
                     val *= scale;
                     if val > maxval {
                         maxval = val;
                     }
-                    *preatt_bth.offset(t2 as isize) = val;
+
+                    *preatt_bth.add(t2) = val;
                 }
 
+                // Pass 2: calculate the exp and keep track of sum
                 let mut expsum = 0.0f32;
-                (0..=t).into_iter().for_each(|t2_0| {
-                    let expv = (*preatt_bth.offset(t2_0 as isize) - maxval).exp();
+                for t2 in 0..=t {
+                    let expv = (*preatt_bth.add(t2) - maxval).exp();
                     expsum += expv;
-                    *att_bth.offset(t2_0 as isize) = expv;
-                });
-
+                    *att_bth.add(t2) = expv;
+                }
                 let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
-                (0..T).into_iter().for_each(|t2_1| {
-                    if t2_1 <= t {
-                        *att_bth.offset(t2_1 as isize) *= expsum_inv;
+
+                // Pass 3: normalize to get the softmax
+                for t2 in 0..T {
+                    if t2 <= t {
+                        *att_bth.add(t2) *= expsum_inv;
                     } else {
-                        *att_bth.offset(t2_1 as isize) = 0.0;
+                        *att_bth.add(t2) = 0.0;
                     }
-                });
+                }
 
-                let out_bth = out
-                    .load(Ordering::SeqCst)
-                    .offset((b * T * C + t * C + h * hs) as isize);
-                (0..hs).into_iter().for_each(|i_0| {
-                    *out_bth.offset(i_0 as isize) = 0.0;
-                });
-
-                for t2_2 in 0..=t {
-                    let value_t2 = inp
-                        .load(Ordering::SeqCst)
-                        .offset((b * T * C3 + t2_2 * C3 + h * hs + 2 * C) as isize);
-                    let att_btht2 = *att_bth.offset(t2_2 as isize);
-                    (0..hs).into_iter().for_each(|i_1| {
-                        *out_bth.offset(i_1 as isize) += att_btht2 * *value_t2.offset(i_1 as isize);
-                    });
+                // Pass 4: accumulate weighted values into the output of attention
+                let out_bth = out.load(Ordering::SeqCst).add(b * T * C + t * C + h * hs);
+                for i in 0..hs {
+                    *out_bth.add(i) = 0.0;
+                }
+                for t2 in 0..=t {
+                    let value_t2 = inp.load(Ordering::SeqCst).add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let att_btht2 = *att_bth.add(t2);
+                    for i in 0..hs {
+                        *out_bth.add(i) += att_btht2 * *value_t2.add(i);
+                    }
                 }
             });
         });
     });
 }
 
-pub unsafe extern "C" fn attention_backward(
-    mut dinp: *mut f32,
-    mut dpreatt: *mut f32,
-    mut datt: *mut f32,
-    mut dout: *mut f32,
-    mut inp: *mut f32,
-    mut att: *mut f32,
-    mut B: i32,
-    mut T: i32,
-    mut C: i32,
-    mut NH: i32,
+pub unsafe fn attention_backward(
+    dinp: *mut f32,
+    dpreatt: *mut f32,
+    datt: *mut f32,
+    dout: *const f32,
+    inp: *const f32,
+    att: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    NH: usize,
 ) {
-    let mut C3: i32 = C * 3 as i32;
-    let mut hs: i32 = C / NH;
-    let mut scale: f32 = (1.0f64 / sqrtf(hs as f32) as f64) as f32;
+    let C3 = C * 3; // feature dimension scaled by 3
+    let hs = C / NH; // head size
+    let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
+
+    // Iterate over batch size
     for b in 0..B {
-        let mut t: i32 = 0 as i32;
+        // Iterate over sequence length
         for t in 0..T {
-            let mut h: i32 = 0 as i32;
+            // Iterate over number of heads
             for h in 0..NH {
-                let mut att_bth: *mut f32 = att
-                    .offset((b * NH * T * T) as isize)
-                    .offset((h * T * T) as isize)
-                    .offset((t * T) as isize);
-                let mut datt_bth: *mut f32 = datt
-                    .offset((b * NH * T * T) as isize)
-                    .offset((h * T * T) as isize)
-                    .offset((t * T) as isize);
-                let mut dpreatt_bth: *mut f32 = dpreatt
-                    .offset((b * NH * T * T) as isize)
-                    .offset((h * T * T) as isize)
-                    .offset((t * T) as isize);
-                let mut dquery_t: *mut f32 = dinp
-                    .offset((b * T * C3) as isize)
-                    .offset((t * C3) as isize)
-                    .offset((h * hs) as isize);
-                let mut query_t: *mut f32 = inp
-                    .offset((b * T * C3) as isize)
-                    .offset((t * C3) as isize)
-                    .offset((h * hs) as isize);
-                let mut dout_bth: *mut f32 = dout
-                    .offset((b * T * C) as isize)
-                    .offset((t * C) as isize)
-                    .offset((h * hs) as isize);
+                // Access pointers for att, datt, and dpreatt
+                let att_bth = att.add(b * NH * T * T + h * T * T + t * T);
+                let datt_bth = datt.add(b * NH * T * T + h * T * T + t * T);
+                let dpreatt_bth = dpreatt.add(b * NH * T * T + h * T * T + t * T);
+                let dquery_t = dinp.add(b * T * C3 + t * C3 + h * hs);
+                let query_t = inp.add(b * T * C3 + t * C3 + h * hs);
+
+                // Backward pass 4: through the value accumulation
+                let dout_bth = dout.add(b * T * C + t * C + h * hs);
                 for t2 in 0..=t {
-                    let mut value_t2: *mut f32 = inp
-                        .offset((b * T * C3) as isize)
-                        .offset((t2 * C3) as isize)
-                        .offset((h * hs) as isize)
-                        .offset((C * 2) as isize);
-                    let mut dvalue_t2: *mut f32 = dinp
-                        .offset((b * T * C3) as isize)
-                        .offset((t2 * C3) as isize)
-                        .offset((h * hs) as isize)
-                        .offset((C * 2) as isize);
-                    (0..hs).into_iter().for_each(|i| {
-                        *datt_bth.offset(t2 as isize) +=
-                            *value_t2.offset(i as isize) * *dout_bth.offset(i as isize);
-                        *dvalue_t2.offset(i as isize) +=
-                            *att_bth.offset(t2 as isize) * *dout_bth.offset(i as isize);
-                    });
+                    let value_t2 = inp.add(b * T * C3 + t2 * C3 + h * hs + C * 2); // +C*2 because it's value
+                    let dvalue_t2 = dinp.add(b * T * C3 + t2 * C3 + h * hs + C * 2);
+                    for i in 0..hs {
+                        // Forward pass was: out_bth[i] += att_bth[t2] * value_t2[i];
+                        // Backward pass:
+                        *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
+                        *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
+                    }
                 }
-                for t2_0 in 0..=t {
-                    (0..=t).into_iter().for_each(|t3| {
-                        let indicator: f32 = if t2_0 == t3 { 1.0f32 } else { 0.0f32 };
-                        let local_derivative: f32 = unsafe {
-                            *att_bth.offset(t2_0 as isize)
-                                * (indicator - *att_bth.offset(t3 as isize))
-                        };
-                        *dpreatt_bth.offset(t3 as isize) +=
-                            local_derivative * *datt_bth.offset(t2_0 as isize);
-                    });
+
+                // Backward pass 2 & 3: the softmax
+                for t2 in 0..=t {
+                    for t3 in 0..=t {
+                        let indicator = if t2 == t3 { 1.0f32 } else { 0.0f32 };
+                        let local_derivative = *att_bth.add(t2) * (indicator - *att_bth.add(t3));
+                        *dpreatt_bth.add(t3) += local_derivative * *datt_bth.add(t2);
+                    }
                 }
-                for t2_1 in 0..=t {
-                    let mut key_t2: *mut f32 = inp
-                        .offset((b * T * C3) as isize)
-                        .offset((t2_1 * C3) as isize)
-                        .offset((h * hs) as isize)
-                        .offset(C as isize);
-                    let mut dkey_t2: *mut f32 = dinp
-                        .offset((b * T * C3) as isize)
-                        .offset((t2_1 * C3) as isize)
-                        .offset((h * hs) as isize)
-                        .offset(C as isize);
-                    (0..hs).into_iter().for_each(|i_0| {
-                        *dquery_t.offset(i_0 as isize) += *key_t2.offset(i_0 as isize)
-                            * *dpreatt_bth.offset(t2_1 as isize)
-                            * scale;
-                        *dkey_t2.offset(i_0 as isize) += *query_t.offset(i_0 as isize)
-                            * *dpreatt_bth.offset(t2_1 as isize)
-                            * scale;
-                    });
+
+                // Backward pass 1: the query @ key matmul
+                for t2 in 0..=t {
+                    let key_t2 = inp.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let dkey_t2 = dinp.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    for i in 0..hs {
+                        // Forward pass was: preatt_bth[t2] += (query_t[i] * key_t2[i]) * scale;
+                        // Backward pass:
+                        *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
+                        *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
+                    }
                 }
             }
         }
     }
 }
 
-pub unsafe extern "C" fn gelu_forward(mut out: *mut f32, mut inp: *mut f32, mut N: i32) {
-    (0..N).into_iter().for_each(|i| {
-        let mut x: f32 = unsafe { *inp.offset(i as isize) };
-        let mut cube: f32 = 0.044715f32 * x * x * x;
-        *out.offset(i as isize) =
-            0.5f32 * x * (1.0f32 + tanhf(sqrtf(2.0f32 / 3.14159265358979323846f32) * (x + cube)));
-    });
+pub unsafe fn gelu_forward(
+    out: *mut f32, 
+    inp: *const f32, 
+    N: usize
+) {
+    for i in 0..N {
+        // Access the input value
+        let x = *inp.add(i);
+
+        // Compute the cube term
+        let cube = 0.044715 * x * x * x;
+
+        // Apply the GeLU activation function
+        let result = 0.5 * x * (1.0 + ((2.0 / PI).sqrt() * (x + cube)).tanh());
+
+        // Store the result in the output array
+        *out.add(i) = result;
+    }
 }
 
-pub unsafe extern "C" fn gelu_backward(
-    mut dinp: *mut f32,
-    mut inp: *mut f32,
-    mut dout: *mut f32,
-    mut N: i32,
+pub unsafe fn gelu_backward(
+    dinp: *mut f32,
+    inp: *const f32,
+    dout: *const f32,
+    N: usize,
 ) {
-    (0..N).into_iter().for_each(|i| {
-        let x: f32 = unsafe { *inp.offset(i as isize) };
-        let cube: f32 = 0.044715f32 * x * x * x;
-        let tanh_arg: f32 = sqrtf((2.0f32 as f64 / 3.14159265358979323846f64) as f32) * (x + cube);
-        let tanh_out: f32 = tanhf(tanh_arg);
-        let coshf_out: f32 = coshf(tanh_arg);
-        let sech_out: f32 = 1.0f32 / (coshf_out * coshf_out);
-        let local_grad: f32 = 0.5f32 * (1.0f32 + tanh_out)
-            + x * 0.5f32
-                * sech_out
-                * sqrtf((2.0f32 as f64 / 3.14159265358979323846f64) as f32)
-                * (1.0f32 + 3.0f32 * 0.044715f32 * x * x);
-        *dinp.offset(i as isize) += local_grad * *dout.offset(i as isize);
-    });
+    for i in 0..N {
+        let gelu_scaling_factor: f32 = (2.0 / PI).sqrt();
+
+        // Access the input value and output gradient
+        let x = *inp.add(i);
+        let dout_i = *dout.add(i);
+
+        // Compute the cube term
+        let cube = 0.044715 * x * x * x;
+
+        // Compute the tanh argument
+        let tanh_arg = gelu_scaling_factor * (x + cube);
+        let tanh_out = tanh_arg.tanh();
+        let coshf_out = tanh_arg.cosh();
+        let sech_out = 1.0 / (coshf_out * coshf_out);
+
+        // Compute the local gradient
+        let local_grad = 0.5 * (1.0 + tanh_out)
+            + x * 0.5 * sech_out * gelu_scaling_factor * (1.0 + 3.0 * 0.044715 * x * x);
+
+        // Update the input gradient
+        *dinp.add(i) += local_grad * dout_i;
+    }
 }
 
 pub unsafe extern "C" fn residual_forward(
-    mut out: *mut f32,
-    mut inp1: *mut f32,
-    mut inp2: *mut f32,
-    mut N: i32,
+    out: *mut f32,
+    inp1: *const f32,
+    inp2: *const f32,
+    N: usize,
 ) {
-    (0..N).into_iter().for_each(|i| {
-        *out.offset(i as isize) = *inp1.offset(i as isize) + *inp2.offset(i as isize);
-    });
+    for i in 0..N {
+        // Access the elements of inp1 and inp2, add them, and store the result in out
+        *out.add(i) = *inp1.add(i) + *inp2.add(i);
+    }
 }
 
-pub unsafe extern "C" fn residual_backward(
-    mut dinp1: *mut f32,
-    mut dinp2: *mut f32,
-    mut dout: *mut f32,
-    mut N: i32,
+pub unsafe fn residual_backward(
+    dinp1: *mut f32,
+    dinp2: *mut f32,
+    dout: *const f32,
+    N: usize,
 ) {
-    (0..N).into_iter().for_each(|i| {
-        *dinp1.offset(i as isize) += *dout.offset(i as isize);
-        *dinp2.offset(i as isize) += *dout.offset(i as isize);
-    });
+    for i in 0..N {
+        // Access the elements of dout and update dinp1 and dinp2
+        let grad = *dout.add(i);
+        *dinp1.add(i) += grad;
+        *dinp2.add(i) += grad;
+    }
 }
 
 pub unsafe extern "C" fn softmax_forward(
@@ -1126,9 +1163,9 @@ pub unsafe extern "C" fn gpt2_forward(
         inputs,
         params.wte,
         params.wpe,
-        B as i32,
-        T as i32,
-        C as i32,
+        B as usize,
+        T as usize,
+        C as usize,
     );
     (0..L as usize).into_iter().for_each(|l| {
         let residual = if l == 0 {
@@ -1168,25 +1205,25 @@ pub unsafe extern "C" fn gpt2_forward(
         let l_residual3 = acts.residual3.offset((l as u64 * B * T * C) as isize);
 
         layernorm_forward(
-            l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B as i32, T as i32, C as i32,
+            l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B as usize, T as usize, C as usize,
         );
         matmul_forward(
             l_qkv,
             l_ln1,
             l_qkvw,
             l_qkvb,
-            B as i32,
-            T as i32,
-            C as i32,
-            (3 as u64 * C) as i32,
+            B as usize,
+            T as usize,
+            C as usize,
+            (3 as u64 * C) as usize,
         );
         attention_forward(
-            l_atty, l_preatt, l_att, l_qkv, B as i32, T as i32, C as i32, NH as i32,
+            l_atty, l_preatt, l_att, l_qkv, B as usize, T as usize, C as usize, NH as usize,
         );
         matmul_forward(
-            l_attproj, l_atty, l_attprojw, l_attprojb, B as i32, T as i32, C as i32, C as i32,
+            l_attproj, l_atty, l_attprojw, l_attprojb, B as usize, T as usize, C as usize, C as usize,
         );
-        residual_forward(l_residual2, residual, l_attproj, (B * T * C) as i32);
+        residual_forward(l_residual2, residual, l_attproj, (B * T * C) as usize);
         layernorm_forward(
             l_ln2,
             l_ln2_mean,
@@ -1194,32 +1231,32 @@ pub unsafe extern "C" fn gpt2_forward(
             l_residual2,
             l_ln2w,
             l_ln2b,
-            B as i32,
-            T as i32,
-            C as i32,
+            B as usize,
+            T as usize,
+            C as usize,
         );
         matmul_forward(
             l_fch,
             l_ln2,
             l_fcw,
             l_fcb,
-            B as i32,
-            T as i32,
-            C as i32,
-            (4 * C) as i32,
+            B as usize,
+            T as usize,
+            C as usize,
+            (4 * C) as usize,
         );
-        gelu_forward(l_fch_gelu, l_fch, (B * T * 4 * C) as i32);
+        gelu_forward(l_fch_gelu, l_fch, (B * T * 4 * C) as usize);
         matmul_forward(
             l_fcproj,
             l_fch_gelu,
             l_fcprojw,
             l_fcprojb,
-            B as i32,
-            T as i32,
-            (4 * C) as i32,
-            C as i32,
+            B as usize,
+            T as usize,
+            (4 * C) as usize,
+            C as usize,
         );
-        residual_forward(l_residual3, l_residual2, l_fcproj, (B * T * C) as i32);
+        residual_forward(l_residual3, l_residual2, l_fcproj, (B * T * C) as usize);
     });
 
     residual = (acts.residual3).offset(
@@ -1235,19 +1272,19 @@ pub unsafe extern "C" fn gpt2_forward(
         residual,
         params.lnfw,
         params.lnfb,
-        B as i32,
-        T as i32,
-        C as i32,
+        B as usize,
+        T as usize,
+        C as usize,
     );
     matmul_forward(
         acts.logits,
         acts.lnf,
         params.wte,
         0 as *mut f32,
-        B as i32,
-        T as i32,
-        C as i32,
-        V as i32,
+        B as usize,
+        T as usize,
+        C as usize,
+        V as usize,
     );
     softmax_forward(acts.probs, acts.logits, B as i32, T as i32, V as i32);
     if !targets.is_null() {
@@ -1333,10 +1370,10 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
         grads_acts.logits,
         acts.lnf,
         params.wte,
-        B as i32,
-        T as i32,
-        C as i32,
-        V as i32,
+        B as usize,
+        T as usize,
+        C as usize,
+        V as usize,
     );
     let mut residual: *mut f32 = (acts.residual3).offset(
         L.wrapping_sub(1 as i32 as u64)
@@ -1359,9 +1396,9 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
         params.lnfw,
         acts.lnf_mean,
         acts.lnf_rstd,
-        B as i32,
-        T as i32,
-        C as i32,
+        B as usize,
+        T as usize,
+        C as usize,
     );
     ((0..L).rev()).for_each(|l| {
         let residual = if l == 0 {
@@ -1514,7 +1551,7 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_residual2,
             dl_fcproj,
             dl_residual3,
-            B.wrapping_mul(T).wrapping_mul(C) as i32,
+            B.wrapping_mul(T).wrapping_mul(C) as usize,
         );
         matmul_backward(
             dl_fch_gelu,
@@ -1523,10 +1560,10 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_fcproj,
             l_fch_gelu,
             l_fcprojw,
-            B as i32,
-            T as i32,
-            (4 as i32 as u64).wrapping_mul(C) as i32,
-            C as i32,
+            B as usize,
+            T as usize,
+            (4 as i32 as u64).wrapping_mul(C) as usize,
+            C as usize,
         );
         gelu_backward(
             dl_fch,
@@ -1534,7 +1571,7 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_fch_gelu,
             B.wrapping_mul(T)
                 .wrapping_mul(4 as i32 as u64)
-                .wrapping_mul(C) as i32,
+                .wrapping_mul(C) as usize,
         );
         matmul_backward(
             dl_ln2,
@@ -1543,10 +1580,10 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_fch,
             l_ln2,
             l_fcw,
-            B as i32,
-            T as i32,
-            C as i32,
-            (4 as i32 as u64).wrapping_mul(C) as i32,
+            B as usize,
+            T as usize,
+            C as usize,
+            (4 as i32 as u64).wrapping_mul(C) as usize,
         );
         layernorm_backward(
             dl_residual2,
@@ -1557,15 +1594,15 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             l_ln2w,
             l_ln2_mean,
             l_ln2_rstd,
-            B as i32,
-            T as i32,
-            C as i32,
+            B as usize,
+            T as usize,
+            C as usize,
         );
         residual_backward(
             dresidual,
             dl_attproj,
             dl_residual2,
-            B.wrapping_mul(T).wrapping_mul(C) as i32,
+            B.wrapping_mul(T).wrapping_mul(C) as usize,
         );
         matmul_backward(
             dl_atty,
@@ -1574,14 +1611,14 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_attproj,
             l_atty,
             l_attprojw,
-            B as i32,
-            T as i32,
-            C as i32,
-            C as i32,
+            B as usize,
+            T as usize,
+            C as usize,
+            C as usize,
         );
         attention_backward(
-            dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B as i32, T as i32, C as i32,
-            NH as i32,
+            dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B as usize, T as usize, C as usize,
+            NH as usize,
         );
         matmul_backward(
             dl_ln1,
@@ -1590,14 +1627,14 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
             dl_qkv,
             l_ln1,
             l_qkvw,
-            B as i32,
-            T as i32,
-            C as i32,
-            (3 as i32 as u64).wrapping_mul(C) as i32,
+            B as usize,
+            T as usize,
+            C as usize,
+            (3 as i32 as u64).wrapping_mul(C) as usize,
         );
         layernorm_backward(
             dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd,
-            B as i32, T as i32, C as i32,
+            B as usize, T as usize, C as usize,
         );
     });
     encoder_backward(
@@ -1605,9 +1642,9 @@ pub unsafe extern "C" fn gpt2_backward(mut model: *mut GPT2) {
         grads.wpe,
         grads_acts.encoded,
         (*model).inputs,
-        B as i32,
-        T as i32,
-        C as i32,
+        B as usize,
+        T as usize,
+        C as usize,
     );
 }
 
@@ -1908,7 +1945,8 @@ pub unsafe extern "C" fn tokenizer_free(mut tokenizer: *mut Tokenizer) {
         free((*tokenizer).token_table as *mut usize);
     }
 }
-unsafe fn main_0() -> i32 {
+
+pub fn main() {
     let mut model: GPT2 = GPT2 {
         config: GPT2Config {
             max_seq_len: 0,
@@ -2019,160 +2057,161 @@ unsafe fn main_0() -> i32 {
         targets: 0 as *mut i32,
         mean_loss: 0.,
     };
-    gpt2_build_from_checkpoint(&mut model, b"gpt2_124M.bin\0" as *const u8 as *const u8);
-    let mut tiny_stories_train: *const u8 =
-        b"data/TinyStories_train.bin\0" as *const u8 as *const u8;
-    let mut tiny_stories_val: *const u8 = b"data/TinyStories_val.bin\0" as *const u8 as *const u8;
-    let mut tiny_shakespeare_train: *const u8 =
-        b"data/tiny_shakespeare_train.bin\0" as *const u8 as *const u8;
-    let mut tiny_shakespeare_val: *const u8 =
-        b"data/tiny_shakespeare_val.bin\0" as *const u8 as *const u8;
-    let mut train_tokens: *const u8 = if access(tiny_shakespeare_train, 0 as i32) != -(1 as i32) {
-        tiny_shakespeare_train
-    } else {
-        tiny_stories_train
-    };
-    let mut val_tokens: *const u8 = if access(tiny_shakespeare_val, 0 as i32) != -(1 as i32) {
-        tiny_shakespeare_val
-    } else {
-        tiny_stories_val
-    };
-    let mut B: i32 = 4 as i32;
-    let mut T: i32 = 64 as i32;
-    let mut train_loader: DataLoader = DataLoader {
-        B: 0,
-        T: 0,
-        tokens_file: 0 as *mut FILE,
-        file_size: 0,
-        current_position: 0,
-        batch: 0 as *mut i32,
-        inputs: 0 as *mut i32,
-        targets: 0 as *mut i32,
-        num_batches: 0,
-    };
-    dataloader_init(&mut train_loader, train_tokens, B, T);
-    printf(
-        b"train dataset num_batches: %d\n\0" as *const u8 as *const u8,
-        train_loader.num_batches,
-    );
-    let mut val_loader: DataLoader = DataLoader {
-        B: 0,
-        T: 0,
-        tokens_file: 0 as *mut FILE,
-        file_size: 0,
-        current_position: 0,
-        batch: 0 as *mut i32,
-        inputs: 0 as *mut i32,
-        targets: 0 as *mut i32,
-        num_batches: 0,
-    };
-    dataloader_init(&mut val_loader, val_tokens, B, T);
-    printf(
-        b"val dataset num_batches: %d\n\0" as *const u8 as *const u8,
-        val_loader.num_batches,
-    );
-    let mut val_num_batches: i32 = 5 as i32;
-    let mut tokenizer: Tokenizer = Tokenizer {
-        vocab_size: 0,
-        token_table: 0 as *mut *mut u8,
-        init_ok: 0,
-    };
-    tokenizer_init(
-        &mut tokenizer,
-        b"gpt2_tokenizer.bin\0" as *const u8 as *const u8,
-    );
-    let mut rng_state: u64 = 1337 as i32 as u64;
-    let mut gen_tokens: *mut i32 =
-        malloc(((B * T) as u64).wrapping_mul(::core::mem::size_of::<i32>() as u64)) as *mut i32;
-    let genT: i32 = 64 as i32;
-    let mut start: timespec = timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    let mut end: timespec = timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    for step in 0..=40 {
-        if step % 10 == 0 {
-            let mut val_loss: f32 = 0.0;
-            dataloader_reset(&mut val_loader);
-            (0..val_num_batches).into_iter().for_each(|i| {
-                dataloader_next_batch(&mut val_loader);
-                gpt2_forward(
-                    &mut model,
-                    val_loader.inputs,
-                    val_loader.targets,
-                    B as size_t,
-                    T as size_t,
-                );
-                val_loss += model.mean_loss;
-            });
-            val_loss /= val_num_batches as f32;
-            println!("val loss {:.3}", val_loss); // Assuming use of Rust's print macros for simplicity
-        }
-
-        if step > 0 && step % 20 == 0 {
-            (0..(B * T)).into_iter().for_each(|i| {
-                unsafe {
-                    *gen_tokens.offset(i as isize) = 50256;
-                }
-            });
-            println!("generating:\n---");
-            (1..genT).into_iter().for_each(|t| {
-                gpt2_forward(
-                    &mut model,
-                    gen_tokens,
-                    std::ptr::null_mut(),
-                    B as size_t,
-                    T as size_t,
-                );
-                unsafe {
-                    let probs =
-                        (model.acts.probs).offset(((t - 1) * model.config.vocab_size) as isize);
-                    let coin = random_f32(&mut rng_state);
-                    let next_token = sample_mult(probs, model.config.vocab_size, coin);
-                    *gen_tokens.offset(t as isize) = next_token;
-                    if tokenizer.init_ok != 0 {
-                        let token_str = tokenizer_decode(&mut tokenizer, next_token as u32);
-                        safe_printf(token_str); // Assumes `safe_printf` correctly handles C strings.
-                    } else {
-                        println!("{}", next_token);
+    
+    unsafe {
+        // build the GPT-2 model from a checkpoint
+        gpt2_build_from_checkpoint(&mut model, b"gpt2_124M.bin\0" as *const u8 as *const u8);
+        
+        let mut tiny_stories_train: *const u8 =
+            b"data/TinyStories_train.bin\0" as *const u8 as *const u8;
+        let mut tiny_stories_val: *const u8 = b"data/TinyStories_val.bin\0" as *const u8 as *const u8;
+        let mut tiny_shakespeare_train: *const u8 =
+            b"data/tiny_shakespeare_train.bin\0" as *const u8 as *const u8;
+        let mut tiny_shakespeare_val: *const u8 =
+            b"data/tiny_shakespeare_val.bin\0" as *const u8 as *const u8;
+        let mut train_tokens: *const u8 = if access(tiny_shakespeare_train, 0 as i32) != -(1 as i32) {
+            tiny_shakespeare_train
+        } else {
+            tiny_stories_train
+        };
+        let mut val_tokens: *const u8 = if access(tiny_shakespeare_val, 0 as i32) != -(1 as i32) {
+            tiny_shakespeare_val
+        } else {
+            tiny_stories_val
+        };
+        let mut B: i32 = 4 as i32;
+        let mut T: i32 = 64 as i32;
+        let mut train_loader: DataLoader = DataLoader {
+            B: 0,
+            T: 0,
+            tokens_file: 0 as *mut FILE,
+            file_size: 0,
+            current_position: 0,
+            batch: 0 as *mut i32,
+            inputs: 0 as *mut i32,
+            targets: 0 as *mut i32,
+            num_batches: 0,
+        };
+        dataloader_init(&mut train_loader, train_tokens, B, T);
+        printf(
+            b"train dataset num_batches: %d\n\0" as *const u8 as *const u8,
+            train_loader.num_batches,
+        );
+        let mut val_loader: DataLoader = DataLoader {
+            B: 0,
+            T: 0,
+            tokens_file: 0 as *mut FILE,
+            file_size: 0,
+            current_position: 0,
+            batch: 0 as *mut i32,
+            inputs: 0 as *mut i32,
+            targets: 0 as *mut i32,
+            num_batches: 0,
+        };
+        dataloader_init(&mut val_loader, val_tokens, B, T);
+        printf(
+            b"val dataset num_batches: %d\n\0" as *const u8 as *const u8,
+            val_loader.num_batches,
+        );
+        let mut val_num_batches: i32 = 5 as i32;
+        let mut tokenizer: Tokenizer = Tokenizer {
+            vocab_size: 0,
+            token_table: 0 as *mut *mut u8,
+            init_ok: 0,
+        };
+        tokenizer_init(
+            &mut tokenizer,
+            b"gpt2_tokenizer.bin\0" as *const u8 as *const u8,
+        );
+        let mut rng_state: u64 = 1337 as i32 as u64;
+        let mut gen_tokens: *mut i32 =
+            malloc(((B * T) as u64).wrapping_mul(::core::mem::size_of::<i32>() as u64)) as *mut i32;
+        let genT: i32 = 64 as i32;
+        let mut start: timespec = timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let mut end: timespec = timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        for step in 0..=40 {
+            if step % 10 == 0 {
+                let mut val_loss: f32 = 0.0;
+                dataloader_reset(&mut val_loader);
+                (0..val_num_batches).into_iter().for_each(|i| {
+                    dataloader_next_batch(&mut val_loader);
+                    gpt2_forward(
+                        &mut model,
+                        val_loader.inputs,
+                        val_loader.targets,
+                        B as size_t,
+                        T as size_t,
+                    );
+                    val_loss += model.mean_loss;
+                });
+                val_loss /= val_num_batches as f32;
+                println!("val loss {:.3}", val_loss); // Assuming use of Rust's print macros for simplicity
+            }
+    
+            if step > 0 && step % 20 == 0 {
+                (0..(B * T)).into_iter().for_each(|i| {
+                    unsafe {
+                        *gen_tokens.offset(i as isize) = 50256;
                     }
-                }
-            });
-            println!("\n---");
+                });
+                println!("generating:\n---");
+                (1..genT).into_iter().for_each(|t| {
+                    gpt2_forward(
+                        &mut model,
+                        gen_tokens,
+                        std::ptr::null_mut(),
+                        B as size_t,
+                        T as size_t,
+                    );
+                    unsafe {
+                        let probs =
+                            (model.acts.probs).offset(((t - 1) * model.config.vocab_size) as isize);
+                        let coin = random_f32(&mut rng_state);
+                        let next_token = sample_mult(probs, model.config.vocab_size, coin);
+                        *gen_tokens.offset(t as isize) = next_token;
+                        if tokenizer.init_ok != 0 {
+                            let token_str = tokenizer_decode(&mut tokenizer, next_token as u32);
+                            safe_printf(token_str); // Assumes `safe_printf` correctly handles C strings.
+                        } else {
+                            println!("{}", next_token);
+                        }
+                    }
+                });
+                println!("\n---");
+            }
+    
+            // Simulation of time measurement
+            let start = std::time::Instant::now();
+            dataloader_next_batch(&mut train_loader);
+            gpt2_forward(
+                &mut model,
+                train_loader.inputs,
+                train_loader.targets,
+                B as size_t,
+                T as size_t,
+            );
+            gpt2_zero_grad(&mut model);
+            gpt2_backward(&mut model);
+            gpt2_update(&mut model, 1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
+            let time_elapsed = start.elapsed();
+            println!(
+                "step {}: train loss {:.3} (took {:.3} ms)",
+                step,
+                model.mean_loss,
+                time_elapsed.as_secs_f64() * 1000.0
+            );
         }
-
-        // Simulation of time measurement
-        let start = std::time::Instant::now();
-        dataloader_next_batch(&mut train_loader);
-        gpt2_forward(
-            &mut model,
-            train_loader.inputs,
-            train_loader.targets,
-            B as size_t,
-            T as size_t,
-        );
-        gpt2_zero_grad(&mut model);
-        gpt2_backward(&mut model);
-        gpt2_update(&mut model, 1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
-        let time_elapsed = start.elapsed();
-        println!(
-            "step {}: train loss {:.3} (took {:.3} ms)",
-            step,
-            model.mean_loss,
-            time_elapsed.as_secs_f64() * 1000.0
-        );
+    
+        dataloader_free(&mut train_loader);
+        dataloader_free(&mut val_loader);
+        tokenizer_free(&mut tokenizer);
+        gpt2_free(&mut model);
+        free(gen_tokens as *mut usize);
     }
-
-    dataloader_free(&mut train_loader);
-    dataloader_free(&mut val_loader);
-    tokenizer_free(&mut tokenizer);
-    gpt2_free(&mut model);
-    free(gen_tokens as *mut usize);
-    return 0 as i32;
-}
-pub fn main() {
-    unsafe { ::std::process::exit(main_0() as i32) }
 }
