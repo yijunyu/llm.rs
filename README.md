@@ -27,7 +27,7 @@ Currently, the project is undergoing manual updates to find performance improvem
 ## Performance
 
 The system that all the testing is done on is an Intel Core i7-9700 8-core CPU. Currently this implementation is still slower than the C version on this system which can be seen from the breakdown below:
-- **Rust**: **6.038s** on average per step
+- **Rust**: **3.483s** on average per step
 - **C**: **2.447s** on average per step
 
 ## Quick Start
@@ -48,10 +48,10 @@ This will run `cargo build --release` from the llm-rs cargo project after which 
 
 ## TODO
 
-- [ ] Fix types to remove unnecessary casts
-- [ ] Restructure the training script for improved readability
+- [X] Fix types to remove unnecessary casts
+- [X] Restructure the training script for improved readability
 - [ ] Implement the latest version of the tokenizer
-- [ ] Implement the latest version of the data loader
+- [X] Implement the latest version of the data loader
 - [ ] Migrate the testing script
 - [ ] Fix tinystories dataset download
 - [ ] Implement SIMD for improved speed
