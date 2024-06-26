@@ -4,6 +4,7 @@
 
 pub mod gpt2;
 pub mod dataloader;
+pub mod tokenizer;
 
 use std::alloc::{self, alloc, Layout};
 use std::path::Path;
@@ -12,6 +13,7 @@ use std::time::Instant;
 use std::io::{self, Write};
 
 use dataloader::DataLoader;
+use tokenizer::*;
 use gpt2::*;
 
 const BATCH_SIZE: usize = 4;
@@ -116,8 +118,8 @@ pub fn main() {
         let val_num_batches = 5;
 
         // Initialize the Tokenizer
-        // let mut tokenizer = Tokenizer::new();
-        // tokenizer.init("gpt2_tokenizer.bin");
+        let tokenizer_path = Path::new("gpt2_tokenizer.bin");
+        let mut tokenizer = Tokenizer::new(tokenizer_path);
 
         // Memory for generating samples
         let mut rng_state: u64 = 1337;
@@ -152,12 +154,12 @@ pub fn main() {
                     let coin = random_f32(&mut rng_state);
                     let next_token = sample_mult(probs, model.config.vocab_size, coin) as u32;
                     *gen_tokens.add(t) = next_token as i32;
-                    // if tokenizer.init_ok {
-                    //     let token_str = tokenizer.decode(next_token);
-                    //     safe_printf(token_str.unwrap());
-                    // } else {
-                    //     print!("{} ", next_token);
-                    // }
+                    if tokenizer.init_ok {
+                        let token_str = tokenizer.decode(next_token);
+                        safe_print(token_str);
+                    } else {
+                        print!("{} ", next_token);
+                    }
                     io::stdout().flush().unwrap();
                 }
                 println!("\n---");
@@ -177,7 +179,7 @@ pub fn main() {
         // Free resources
         train_loader.free();
         val_loader.free();
-        // drop(tokenizer);
+        tokenizer.free();
         model.free();
         alloc::dealloc(gen_tokens as *mut u8, gen_tokens_layout);
     }

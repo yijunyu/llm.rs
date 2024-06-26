@@ -106,7 +106,7 @@ impl ParameterTensors {
 
         // Assign the tensors to the allocated memory
         let mut params_memory_iterator = params_memory;
-        let mut ptrs: [&mut *mut f32; NUM_PARAMETER_TENSORS] = [
+        let mut ptrs: [*mut *mut f32; NUM_PARAMETER_TENSORS] = [
             &mut self.wte, &mut self.wpe, &mut self.ln1w, &mut self.ln1b, &mut self.qkvw,
             &mut self.qkvb, &mut self.attprojw, &mut self.attprojb, &mut self.ln2w,
             &mut self.ln2b, &mut self.fcw, &mut self.fcb, &mut self.fcprojw, &mut self.fcprojb,

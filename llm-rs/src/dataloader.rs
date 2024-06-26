@@ -81,35 +81,30 @@ impl DataLoader {
         loader.tokens_file = match File::open(filename) {
             Ok(file) => Some(file),
             Err(_) => {
-                eprintln!("Error opening tokens file");
-                std::process::exit(1);
+                panic!("Error opening tokens file");
             }
         };
 
         // Determine the file size
         if let Some(file) = &mut loader.tokens_file {
             if let Err(_) = file.seek(SeekFrom::End(0)) {
-                eprintln!("Error seeking to end of tokens file");
-                std::process::exit(1);
+                panic!("Error seeking to end of tokens file");
             }
 
             loader.file_size = match file.metadata() {
                 Ok(metadata) => metadata.len(),
                 Err(_) => {
-                    eprintln!("Error getting file size");
-                    std::process::exit(1);
+                    panic!("Error getting file size");
                 }
             };
 
             if let Err(_) = file.seek(SeekFrom::Start(0)) {
-                eprintln!("Error seeking to start of tokens file");
-                std::process::exit(1);
+                panic!("Error seeking to start of tokens file");
             }
         }
 
         if loader.file_size < ((B * T + 1) * std::mem::size_of::<i32>()) as u64 {
-            eprintln!("Error: file size is too small for the batch size and sequence length");
-            std::process::exit(1);
+            panic!("Error: file size is too small for the batch size and sequence length");
         }
         loader.current_position = 0; // Start at the beginning
 
