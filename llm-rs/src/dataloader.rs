@@ -5,25 +5,62 @@ use std::path::Path;
 use std::{mem, ptr};
 
 pub struct DataLoader {
+    // ----------------------------------------------------------------------------
     // Hyperparameters
-    pub B: usize,                 // Batch size
-    pub T: usize,                 // Sequence length
+    // ----------------------------------------------------------------------------
 
+    /// Batch size
+    pub B: usize,
+
+    /// Sequence length
+    pub T: usize,
+
+    // ----------------------------------------------------------------------------
     // Input handling and its state
-    pub tokens_file: Option<File>, // File for tokens
-    pub file_size: u64,           // File size in bytes
-    pub current_position: u64,    // Current position in the file
+    // ----------------------------------------------------------------------------
 
+    /// File for tokens
+    pub tokens_file: Option<File>,
+
+    /// File size
+    pub file_size: u64,
+
+    /// Current position in the file
+    pub current_position: u64,
+
+    // ----------------------------------------------------------------------------
     // Output memory
-    pub batch: *mut i32,          // Pointer to batch memory
-    pub inputs: *mut i32,         // Pointer to input tokens
-    pub targets: *mut i32,        // Pointer to target tokens
+    // ----------------------------------------------------------------------------
 
+    /// Pointer to batch memory
+    pub batch: *mut i32,
+
+    /// Pointer to input tokens
+    pub inputs: *mut i32,
+
+    /// Pointer to target tokens
+    pub targets: *mut i32,
+
+    // ----------------------------------------------------------------------------
     // Convenience variables
-    pub num_batches: usize,       // Number of batches
+    // ----------------------------------------------------------------------------
+
+    /// Number of batches
+    pub num_batches: usize,
 }
 
 impl DataLoader {
+    /// Creates a new DataLoader instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` - Path to the tokens file.
+    /// * `B` - Batch size.
+    /// * `T` - Sequence length.
+    ///
+    /// # Returns
+    ///
+    /// A new `DataLoader` instance.
     pub fn new(
         filename: &Path,
         B: usize,
@@ -88,10 +125,12 @@ impl DataLoader {
         loader
     }
 
+    /// Resets the DataLoader to start from the beginning of the file.
     pub fn reset(&mut self) {
         self.current_position = 0;
     }
 
+    /// Loads the next batch of data into the DataLoader's memory.
     pub fn next_batch(&mut self) {
         let B = self.B;
         let T = self.T;
@@ -125,6 +164,7 @@ impl DataLoader {
         }
     }
 
+    /// Frees the memory allocated by the DataLoader.
     pub fn free(&mut self) {
         if let Some(file) = self.tokens_file.take() {
             drop(file); // Close the file by dropping it
