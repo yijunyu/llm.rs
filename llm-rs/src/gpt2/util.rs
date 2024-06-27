@@ -27,22 +27,28 @@ pub unsafe fn encoder_forward(
     T: usize,
     C: usize,
 ) {
-    for b in 0..B {
-        for t in 0..T {
-            // Calculate the base address for out[b,t,:]
-            let out_bt = out.add(b * T * C + t * C);
-            // Get the token index at inp[b, t]
-            let ix = *inp.add(b * T + t) as usize;
-            // Calculate the base address for wte[ix,:]
-            let wte_ix = wte.add(ix * C);
-            // Calculate the base address for wpe[t,:]
-            let wpe_t = wpe.add(t * C);
-            // Sum the token and position embeddings and store the result in out[b,t,:]
+    let out_atomic = AtomicPtr::new(out);
+    let inp_atomic = AtomicPtr::new(inp as *mut i32);
+    let wte_atomic = AtomicPtr::new(wte as *mut f32);
+    let wpe_atomic = AtomicPtr::new(wpe as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let out_raw = out_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let wte_raw = wte_atomic.load(Ordering::SeqCst);
+            let wpe_raw = wpe_atomic.load(Ordering::SeqCst);
+
+            let out_bt = out_raw.add(b * T * C + t * C);
+            let ix = *inp_raw.add(b * T + t) as usize;
+            let wte_ix = wte_raw.add(ix * C);
+            let wpe_t = wpe_raw.add(t * C);
+
             for i in 0..C {
                 *out_bt.add(i) = *wte_ix.add(i) + *wpe_t.add(i);
             }
-        }
-    }
+        });
+    });
 }
 
 /// Computes the backward pass for the encoder, updating gradients for token and position embeddings.
@@ -65,24 +71,30 @@ pub unsafe fn encoder_backward(
     T: usize,
     C: usize,
 ) {
-    for b in 0..B {
-        for t in 0..T {
-            // Calculate the base address for dout[b,t,:]
-            let dout_bt = dout.add(b * T * C + t * C);
-            // Get the token index at inp[b, t]
-            let ix = *inp.add(b * T + t) as usize;
-            // Calculate the base address for dwte[ix,:]
-            let dwte_ix = dwte.add(ix * C);
-            // Calculate the base address for dwpe[t,:]
-            let dwpe_t = dwpe.add(t * C);
-            // Accumulate the gradients from dout into dwte and dwpe
+    let dwte_atomic = AtomicPtr::new(dwte);
+    let dwpe_atomic = AtomicPtr::new(dwpe);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+    let inp_atomic = AtomicPtr::new(inp as *mut i32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let dwte_raw = dwte_atomic.load(Ordering::SeqCst);
+            let dwpe_raw = dwpe_atomic.load(Ordering::SeqCst);
+            let dout_raw = dout_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+
+            let dout_bt = dout_raw.add(b * T * C + t * C);
+            let ix = *inp_raw.add(b * T + t) as usize;
+            let dwte_ix = dwte_raw.add(ix * C);
+            let dwpe_t = dwpe_raw.add(t * C);
+
             for i in 0..C {
                 let d = *dout_bt.add(i);
                 *dwte_ix.add(i) += d;
                 *dwpe_t.add(i) += d;
             }
-        }
-    }
+        });
+    });
 }
 
 /// Computes the forward pass for Layer Normalization, producing normalized output,
@@ -116,10 +128,24 @@ pub unsafe fn layernorm_forward(
 ) {
     let eps: f32 = 1e-5;
 
-    for b in 0..B {
-        for t in 0..T {
+    let out_atomic = AtomicPtr::new(out);
+    let mean_atomic = AtomicPtr::new(mean);
+    let rstd_atomic = AtomicPtr::new(rstd);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+    let weight_atomic = AtomicPtr::new(weight as *mut f32);
+    let bias_atomic = AtomicPtr::new(bias as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let out_raw = out_atomic.load(Ordering::SeqCst);
+            let mean_raw = mean_atomic.load(Ordering::SeqCst);
+            let rstd_raw = rstd_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let weight_raw = weight_atomic.load(Ordering::SeqCst);
+            let bias_raw = bias_atomic.load(Ordering::SeqCst);
+
             // Calculate the base address for inp[b,t,:]
-            let x = inp.add(b * T * C + t * C);
+            let x = inp_raw.add(b * T * C + t * C);
 
             // Calculate the mean
             let mut m: f32 = 0.0;
@@ -140,18 +166,18 @@ pub unsafe fn layernorm_forward(
             let s: f32 = 1.0 / (v + eps).sqrt();
 
             // Calculate the base address for out[b,t,:]
-            let out_bt = out.add(b * T * C + t * C);
+            let out_bt = out_raw.add(b * T * C + t * C);
             for i in 0..C {
                 let n = s * (*x.add(i) - m); // Normalize
-                let o = n * *weight.add(i) + *bias.add(i); // Scale and shift
+                let o = n * *weight_raw.add(i) + *bias_raw.add(i); // Scale and shift
                 *out_bt.add(i) = o; // Write
             }
 
             // Cache the mean and rstd for the backward pass
-            *mean.add(b * T + t) = m;
-            *rstd.add(b * T + t) = s;
-        }
-    }
+            *mean_raw.add(b * T + t) = m;
+            *rstd_raw.add(b * T + t) = s;
+        });
+    });
 }
 
 /// Computes the backward pass for Layer Normalization, updating gradients for inputs,
@@ -183,21 +209,39 @@ pub unsafe fn layernorm_backward(
     T: usize,
     C: usize,
 ) {
-    for b in 0..B {
-        for t in 0..T {
+    let dinp_atomic = AtomicPtr::new(dinp);
+    let dweight_atomic = AtomicPtr::new(dweight);
+    let dbias_atomic = AtomicPtr::new(dbias);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+    let weight_atomic = AtomicPtr::new(weight as *mut f32);
+    let mean_atomic = AtomicPtr::new(mean as *mut f32);
+    let rstd_atomic = AtomicPtr::new(rstd as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+            let dweight_raw = dweight_atomic.load(Ordering::SeqCst);
+            let dbias_raw = dbias_atomic.load(Ordering::SeqCst);
+            let dout_raw = dout_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let weight_raw = weight_atomic.load(Ordering::SeqCst);
+            let mean_raw = mean_atomic.load(Ordering::SeqCst);
+            let rstd_raw = rstd_atomic.load(Ordering::SeqCst);
+
             // Calculate the base addresses
-            let dout_bt = dout.add(b * T * C + t * C);
-            let inp_bt = inp.add(b * T * C + t * C);
-            let dinp_bt = dinp.add(b * T * C + t * C);
-            let mean_bt = *mean.add(b * T + t);
-            let rstd_bt = *rstd.add(b * T + t);
+            let dout_bt = dout_raw.add(b * T * C + t * C);
+            let inp_bt = inp_raw.add(b * T * C + t * C);
+            let dinp_bt = dinp_raw.add(b * T * C + t * C);
+            let mean_bt = *mean_raw.add(b * T + t);
+            let rstd_bt = *rstd_raw.add(b * T + t);
 
             // First: two reduce operations
             let mut dnorm_mean: f32 = 0.0;
             let mut dnorm_norm_mean: f32 = 0.0;
             for i in 0..C {
                 let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
-                let dnorm_i = *weight.add(i) * *dout_bt.add(i);
+                let dnorm_i = *weight_raw.add(i) * *dout_bt.add(i);
                 dnorm_mean += dnorm_i;
                 dnorm_norm_mean += dnorm_i * norm_bti;
             }
@@ -207,13 +251,13 @@ pub unsafe fn layernorm_backward(
             // Now iterate again and accumulate all the gradients
             for i in 0..C {
                 let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
-                let dnorm_i = *weight.add(i) * *dout_bt.add(i);
+                let dnorm_i = *weight_raw.add(i) * *dout_bt.add(i);
 
                 // Gradient contribution to bias
-                *dbias.add(i) += *dout_bt.add(i);
+                *dbias_raw.add(i) += *dout_bt.add(i);
 
                 // Gradient contribution to weight
-                *dweight.add(i) += norm_bti * *dout_bt.add(i);
+                *dweight_raw.add(i) += norm_bti * *dout_bt.add(i);
 
                 // Gradient contribution to input
                 let mut dval: f32 = 0.0;
@@ -223,8 +267,8 @@ pub unsafe fn layernorm_backward(
                 dval *= rstd_bt; // Final scale
                 *dinp_bt.add(i) += dval;
             }
-        }
-    }
+        });
+    });
 }
 
 /// Naive implementation of the forward pass for matrix multiplication, producing the output tensor.
@@ -576,20 +620,34 @@ pub unsafe fn attention_backward(
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    for b in 0..B {
-        for t in 0..T {
-            for h in 0..NH {
-                let att_bth = att.add(b * NH * T * T + h * T * T + t * T);
-                let datt_bth = datt.add(b * NH * T * T + h * T * T + t * T);
-                let dpreatt_bth = dpreatt.add(b * NH * T * T + h * T * T + t * T);
-                let dquery_t = dinp.add(b * T * C3 + t * C3 + h * hs);
-                let query_t = inp.add(b * T * C3 + t * C3 + h * hs);
+    let dinp_atomic = AtomicPtr::new(dinp);
+    let dpreatt_atomic = AtomicPtr::new(dpreatt);
+    let datt_atomic = AtomicPtr::new(datt);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+    let att_atomic = AtomicPtr::new(att as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            (0..NH).into_par_iter().for_each(|h| {
+                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+                let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
+                let datt_raw = datt_atomic.load(Ordering::SeqCst);
+                let dout_raw = dout_atomic.load(Ordering::SeqCst);
+                let inp_raw = inp_atomic.load(Ordering::SeqCst);
+                let att_raw = att_atomic.load(Ordering::SeqCst);
+
+                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
+                let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
+                let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
+                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
 
                 // Backward pass 4: through the value accumulation
-                let dout_bth = dout.add(b * T * C + t * C + h * hs);
+                let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
                 for t2 in 0..=t {
-                    let value_t2 = inp.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
-                    let dvalue_t2 = dinp.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
                     for i in 0..hs {
                         *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
                         *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
@@ -607,16 +665,16 @@ pub unsafe fn attention_backward(
 
                 // Backward pass 1: the query @ key matmul
                 for t2 in 0..=t {
-                    let key_t2 = inp.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
-                    let dkey_t2 = dinp.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
                     for i in 0..hs {
                         *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
                         *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
                     }
                 }
-            }
-        }
-    }
+            });
+        });
+    });
 }
 
 /// Applies the GELU activation function to the input tensor.
@@ -631,15 +689,20 @@ pub unsafe fn gelu_forward(
     inp: *const f32, 
     N: usize
 ) {
-    // Process each element
-    for i in 0..N {
+    let out_atomic = AtomicPtr::new(out);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+
+    (0..N).into_par_iter().for_each(|i| {
+        let out_raw = out_atomic.load(Ordering::SeqCst);
+        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+
         // Load the input value
-        let x = *inp.add(i);
+        let x = *inp_raw.add(i);
         // Calculate the cubic term
         let cube = 0.044715 * x * x * x;
         // Apply the GeLU function
-        *out.add(i) = 0.5 * x * (1.0 + ((2.0 / PI).sqrt() * (x + cube)).tanh());
-    }
+        *out_raw.add(i) = 0.5 * x * (1.0 + ((2.0 / PI).sqrt() * (x + cube)).tanh());
+    });
 }
 
 /// Computes the gradient of the GELU activation function.
@@ -658,28 +721,36 @@ pub unsafe fn gelu_backward(
 ) {
     let gelu_scaling_factor = (2.0 / PI).sqrt();
 
-    for i in 0..N {
+    let dinp_atomic = AtomicPtr::new(dinp);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+
+    (0..N).into_par_iter().for_each(|i| {
+        let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+        let dout_raw = dout_atomic.load(Ordering::SeqCst);
+
         // Load the input value
-        let x = *inp.add(i);
-        let dout_val = *dout.add(i);
-        
+        let x = *inp_raw.add(i);
+        let dout_val = *dout_raw.add(i);
+
         // Compute the cubic term
         let cube = 0.044715 * x * x * x;
-        
+
         // Compute the argument and the output of the tanh function
         let tanh_arg = gelu_scaling_factor * (x + cube);
         let tanh_out = tanh_arg.tanh();
-        
+
         // Compute the hyperbolic cosine and sech (hyperbolic secant)
         let coshf_out = tanh_arg.cosh();
         let sech_out = 1.0 / (coshf_out * coshf_out);
-        
+
         // Compute the local gradient
         let local_grad = 0.5 * (1.0 + tanh_out) + x * 0.5 * sech_out * gelu_scaling_factor * (1.0 + 3.0 * 0.044715 * x * x);
-        
+
         // Accumulate the gradient into dinp
-        *dinp.add(i) += local_grad * dout_val;
-    }
+        *dinp_raw.add(i) += local_grad * dout_val;
+    });
 }
 
 /// Adds two input tensors element-wise and stores the result in the output tensor.
@@ -696,9 +767,18 @@ pub unsafe fn residual_forward(
     inp2: *const f32,
     N: usize,
 ) {
-    for i in 0..N {
-        *out.add(i) = *inp1.add(i) + *inp2.add(i);
-    }
+    let out_atomic = AtomicPtr::new(out);
+    let inp1_atomic = AtomicPtr::new(inp1 as *mut f32);
+    let inp2_atomic = AtomicPtr::new(inp2 as *mut f32);
+
+    (0..N).into_par_iter().for_each(|i| {
+        let out_raw = out_atomic.load(Ordering::SeqCst);
+        let inp1_raw = inp1_atomic.load(Ordering::SeqCst);
+        let inp2_raw = inp2_atomic.load(Ordering::SeqCst);
+
+        // Perform element-wise addition
+        *out_raw.add(i) = *inp1_raw.add(i) + *inp2_raw.add(i);
+    });
 }
 
 /// Accumulates gradients for two input tensors using the gradient of the output tensor.
@@ -715,10 +795,19 @@ pub unsafe fn residual_backward(
     dout: *const f32,
     N: usize,
 ) {
-    for i in 0..N {
-        *dinp1.add(i) += *dout.add(i);
-        *dinp2.add(i) += *dout.add(i);
-    }
+    let dinp1_atomic = AtomicPtr::new(dinp1);
+    let dinp2_atomic = AtomicPtr::new(dinp2);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+
+    (0..N).into_par_iter().for_each(|i| {
+        let dinp1_raw = dinp1_atomic.load(Ordering::SeqCst);
+        let dinp2_raw = dinp2_atomic.load(Ordering::SeqCst);
+        let dout_raw = dout_atomic.load(Ordering::SeqCst);
+
+        // Update the gradients for the inputs
+        *dinp1_raw.add(i) += *dout_raw.add(i);
+        *dinp2_raw.add(i) += *dout_raw.add(i);
+    });
 }
 
 /// Computes the softmax probabilities from logits in parallel.
@@ -800,18 +889,26 @@ pub unsafe fn crossentropy_forward(
     T: usize,
     Vp: usize,
 ) {
-    for b in 0..B {
-        for t in 0..T {
+    let losses_atomic = AtomicPtr::new(losses);
+    let probs_atomic = AtomicPtr::new(probs as *mut f32);
+    let targets_atomic = AtomicPtr::new(targets as *mut i32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let losses_raw = losses_atomic.load(Ordering::SeqCst);
+            let probs_raw = probs_atomic.load(Ordering::SeqCst);
+            let targets_raw = targets_atomic.load(Ordering::SeqCst);
+
             // Calculate the base address for probs
-            let probs_bt = probs.add(b * T * Vp + t * Vp);
+            let probs_bt = probs_raw.add(b * T * Vp + t * Vp);
 
             // Get the target index
-            let ix = *targets.add(b * T + t) as usize;
+            let ix = *targets_raw.add(b * T + t) as usize;
 
             // Compute the cross-entropy loss and store it
-            *losses.add(b * T + t) = -probs_bt.add(ix).read().ln();
-        }
-    }
+            *losses_raw.add(b * T + t) = -probs_bt.add(ix).read().ln();
+        });
+    });
 }
 
 /// Backward pass through both softmax and cross-entropy loss.
@@ -836,13 +933,23 @@ pub unsafe fn crossentropy_softmax_backward(
     V: usize,
     Vp: usize,
 ) {
-    for b in 0..B {
-        for t in 0..T {
+    let dlogits_atomic = AtomicPtr::new(dlogits);
+    let dlosses_atomic = AtomicPtr::new(dlosses as *mut f32);
+    let probs_atomic = AtomicPtr::new(probs as *mut f32);
+    let targets_atomic = AtomicPtr::new(targets as *mut i32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let dlogits_raw = dlogits_atomic.load(Ordering::SeqCst);
+            let dlosses_raw = dlosses_atomic.load(Ordering::SeqCst);
+            let probs_raw = probs_atomic.load(Ordering::SeqCst);
+            let targets_raw = targets_atomic.load(Ordering::SeqCst);
+
             // Calculate the base addresses
-            let dlogits_bt = dlogits.add(b * T * Vp + t * Vp);
-            let probs_bt = probs.add(b * T * Vp + t * Vp);
-            let dloss = *dlosses.add(b * T + t);
-            let ix = *targets.add(b * T + t) as usize;
+            let dlogits_bt = dlogits_raw.add(b * T * Vp + t * Vp);
+            let probs_bt = probs_raw.add(b * T * Vp + t * Vp);
+            let dloss = *dlosses_raw.add(b * T + t);
+            let ix = *targets_raw.add(b * T + t) as usize;
 
             // Loop only to V, leaving padded dimensions untouched
             for i in 0..V {
@@ -850,6 +957,6 @@ pub unsafe fn crossentropy_softmax_backward(
                 let indicator = if i == ix { 1.0 } else { 0.0 };
                 *dlogits_bt.add(i) += (p - indicator) * dloss;
             }
-        }
-    }
+        });
+    });
 }
