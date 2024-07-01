@@ -419,11 +419,11 @@ pub unsafe fn matmul_forward(
 /// * `T` - Sequence length.
 /// * `C` - Input feature dimension.
 /// * `OC` - Output feature dimension.
-/// 
+///
 /// # Note
-/// 
+///
 /// Most of the running time is spent here and in matmul_forward.
-/// This backward could be done in a single "round" of loops but that doesn't afford an efficient parallelization strategy
+/// This backward could be done in a single "round" of loops but that doesn't afford an efficient parallelization strategy.
 pub unsafe fn matmul_backward(
     dinp: *mut f32,
     dweight: *mut f32,
@@ -436,6 +436,7 @@ pub unsafe fn matmul_backward(
     C: usize,
     OC: usize,
 ) {
+    const LOOP_UNROLL: usize = 8;
     let dinp_atomic = AtomicPtr::new(dinp);
     let dweight_atomic = AtomicPtr::new(dweight);
     let dbias_atomic = AtomicPtr::new(dbias);
@@ -443,54 +444,163 @@ pub unsafe fn matmul_backward(
     let inp_atomic = AtomicPtr::new(inp as *mut f32);
     let weight_atomic = AtomicPtr::new(weight as *mut f32);
 
-    // Parallelize over B and T for input gradient computation
-    (0..B).into_par_iter().for_each(|b| {
-        (0..T).into_par_iter().for_each(|t| {
-            // Load the AtomicPtr values into raw pointers for the current scope
+    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
+    if (B * T) % LOOP_UNROLL != 0 {
+        // Parallelize over B and T for input gradient computation
+        (0..B).into_par_iter().for_each(|b| {
+            (0..T).into_par_iter().for_each(|t| {
+                let dout_raw = dout_atomic.load(Ordering::SeqCst);
+                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+                let weight_raw = weight_atomic.load(Ordering::SeqCst);
+
+                let dout_bt = dout_raw.add(b * T * OC + t * OC);
+                let dinp_bt = dinp_raw.add(b * T * C + t * C);
+
+                for o in 0..OC {
+                    let wrow = weight_raw.add(o * C);
+                    let d = *dout_bt.add(o);
+                    for i in 0..C {
+                        *dinp_bt.add(i) += *wrow.add(i) * d;
+                    }
+                }
+            });
+        });
+    }
+    else {
+        // Parallelize over B and T for input gradient computation
+        (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
             let dout_raw = dout_atomic.load(Ordering::SeqCst);
             let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
             let weight_raw = weight_atomic.load(Ordering::SeqCst);
 
-            // Calculate the base addresses for dout and dinp slices
-            let dout_bt = dout_raw.add(b * T * OC + t * OC);
-            let dinp_bt = dinp_raw.add(b * T * C + t * C);
-
             for o in 0..OC {
-                let wrow = weight_raw.add(o * C);
-                let d = *dout_bt.add(o);
-                for i in 0..C {
-                    *dinp_bt.add(i) += *wrow.add(i) * d;
+                for ibt in 0..LOOP_UNROLL {
+                    let bt = obt + ibt;
+                    let dout_bt = dout_raw.add(bt * OC + o);
+                    let dinp_bt = dinp_raw.add(bt * C);
+
+                    let wrow = weight_raw.add(o * C);
+                    let d = *dout_bt;
+
+                    for i in 0..C {
+                        *dinp_bt.add(i) += *wrow.add(i) * d;
+                    }
                 }
             }
         });
-    });
+    }
 
     // Parallelize over output channels for weight and bias gradient computation
     (0..OC).into_par_iter().for_each(|o| {
         for b in 0..B {
             for t in 0..T {
-                // Load the AtomicPtr values into raw pointers for the current scope
                 let dout_raw = dout_atomic.load(Ordering::SeqCst);
                 let inp_raw = inp_atomic.load(Ordering::SeqCst);
                 let dweight_raw = dweight_atomic.load(Ordering::SeqCst);
                 let dbias_raw = dbias_atomic.load(Ordering::SeqCst);
 
-                // Calculate the base addresses for dout and inp slices
                 let dout_bt = dout_raw.add(b * T * OC + t * OC);
                 let inp_bt = inp_raw.add(b * T * C + t * C);
                 let dwrow = dweight_raw.add(o * C);
 
                 let d = *dout_bt.add(o);
-                // Update dbias if not null
                 if !dbias_raw.is_null() {
                     *dbias_raw.add(o) += d;
                 }
-                // Update dweight
                 for i in 0..C {
                     *dwrow.add(i) += *inp_bt.add(i) * d;
                 }
             }
         }
+    });
+}
+
+/// Naive implementation of the forward pass for multi-head attention, generating output and storing attention scores.
+///
+/// # Arguments
+///
+/// * `out` - Output tensor for attention results.
+/// * `preatt` - Pre-attention scores.
+/// * `att` - Post-attention scores.
+/// * `inp` - Input tensor containing query, key, and value vectors.
+/// * `B` - Batch size.
+/// * `T` - Sequence length.
+/// * `C` - Feature dimension.
+/// * `NH` - Number of attention heads.
+pub unsafe fn attention_forward_naive(
+    out: *mut f32,
+    preatt: *mut f32,
+    att: *mut f32,
+    inp: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    NH: usize,
+) {
+    let C3 = C * 3; // feature dimension scaled by 3
+    let hs = C / NH; // head size
+    let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
+
+    let out_atomic = AtomicPtr::new(out);
+    let preatt_atomic = AtomicPtr::new(preatt);
+    let att_atomic = AtomicPtr::new(att);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            (0..NH).into_par_iter().for_each(|h| {
+                let out_raw = out_atomic.load(Ordering::SeqCst);
+                let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
+                let att_raw = att_atomic.load(Ordering::SeqCst);
+                let inp_raw = inp_atomic.load(Ordering::SeqCst);
+
+                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+                let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
+                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+
+                let mut maxval = f32::NEG_INFINITY;
+                for t2 in 0..=t {
+                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
+                    let mut val = 0.0;
+                    for i in 0..hs {
+                        val += *query_t.add(i) * *key_t2.add(i);
+                    }
+                    val *= scale;
+                    if val > maxval {
+                        maxval = val;
+                    }
+                    *preatt_bth.add(t2) = val;
+                }
+
+                let mut expsum = 0.0;
+                for t2 in 0..=t {
+                    let expv = (*preatt_bth.add(t2) - maxval).exp();
+                    expsum += expv;
+                    *att_bth.add(t2) = expv;
+                }
+                let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
+
+                for t2 in 0..T {
+                    if t2 <= t {
+                        *att_bth.add(t2) *= expsum_inv;
+                    } else {
+                        *att_bth.add(t2) = 0.0;
+                    }
+                }
+
+                let out_bth = out_raw.add(b * T * C + t * C + h * hs);
+                for i in 0..hs {
+                    *out_bth.add(i) = 0.0;
+                }
+                for t2 in 0..=t {
+                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
+                    let att_btht2 = *att_bth.add(t2);
+                    for i in 0..hs {
+                        *out_bth.add(i) += att_btht2 * *value_t2.add(i);
+                    }
+                }
+            });
+        });
     });
 }
 
@@ -516,6 +626,7 @@ pub unsafe fn attention_forward(
     C: usize,
     NH: usize,
 ) {
+    const LOOP_UNROLL: usize = 8;
     let C3 = C * 3; // feature dimension scaled by 3
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
@@ -525,24 +636,31 @@ pub unsafe fn attention_forward(
     let att_atomic = AtomicPtr::new(att);
     let inp_atomic = AtomicPtr::new(inp as *mut f32);
 
-    (0..B).into_par_iter().for_each(|b| {
-        (0..T).into_par_iter().for_each(|t| {
-            (0..NH).into_par_iter().for_each(|h| {
-                // Load the AtomicPtr values into raw pointers for the current scope
-                let out_raw = out_atomic.load(Ordering::SeqCst);
-                let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
-                let att_raw = att_atomic.load(Ordering::SeqCst);
-                let inp_raw = inp_atomic.load(Ordering::SeqCst);
+    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
+    if (B * T) % LOOP_UNROLL != 0 {
+        attention_forward_naive(out, preatt, att, inp, B, T, C, NH);
+        return;
+    }
 
-                // Calculate the base addresses
+    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
+        let out_raw = out_atomic.load(Ordering::SeqCst);
+        let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
+        let att_raw = att_atomic.load(Ordering::SeqCst);
+        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+
+        for h in 0..NH {
+            for ibt in 0..LOOP_UNROLL {
+                let bt = obt + ibt;
+                let t = bt % T;
+                let b = bt / T;
+
                 let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
                 let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
                 let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
 
-                // Pass 1: Calculate query dot key and maxval
-                let mut maxval = f32::NEG_INFINITY; // Using f32::NEG_INFINITY for better initial value
+                let mut maxval = f32::NEG_INFINITY;
                 for t2 in 0..=t {
-                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C for key
+                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
                     let mut val = 0.0;
                     for i in 0..hs {
                         val += *query_t.add(i) * *key_t2.add(i);
@@ -554,7 +672,6 @@ pub unsafe fn attention_forward(
                     *preatt_bth.add(t2) = val;
                 }
 
-                // Pass 2: Calculate the exp and keep track of sum
                 let mut expsum = 0.0;
                 for t2 in 0..=t {
                     let expv = (*preatt_bth.add(t2) - maxval).exp();
@@ -563,7 +680,6 @@ pub unsafe fn attention_forward(
                 }
                 let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
 
-                // Pass 3: Normalize to get the softmax
                 for t2 in 0..T {
                     if t2 <= t {
                         *att_bth.add(t2) *= expsum_inv;
@@ -572,20 +688,19 @@ pub unsafe fn attention_forward(
                     }
                 }
 
-                // Pass 4: Accumulate weighted values into the output of attention
                 let out_bth = out_raw.add(b * T * C + t * C + h * hs);
                 for i in 0..hs {
                     *out_bth.add(i) = 0.0;
                 }
                 for t2 in 0..=t {
-                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 for value
+                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
                     let att_btht2 = *att_bth.add(t2);
                     for i in 0..hs {
                         *out_bth.add(i) += att_btht2 * *value_t2.add(i);
                     }
                 }
-            });
-        });
+            }
+        }
     });
 }
 
@@ -605,6 +720,105 @@ pub unsafe fn attention_forward(
 /// * `C` - Feature dimension.
 /// * `NH` - Number of attention heads.
 pub unsafe fn attention_backward(
+    dinp: *mut f32,
+    dpreatt: *mut f32,
+    datt: *mut f32,
+    dout: *const f32,
+    inp: *const f32,
+    att: *const f32,
+    B: usize,
+    T: usize,
+    C: usize,
+    NH: usize,
+) {
+    const LOOP_UNROLL: usize = 8;
+    let C3 = C * 3; // feature dimension scaled by 3
+    let hs = C / NH; // head size
+    let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
+
+    let dinp_atomic = AtomicPtr::new(dinp);
+    let dpreatt_atomic = AtomicPtr::new(dpreatt);
+    let datt_atomic = AtomicPtr::new(datt);
+    let dout_atomic = AtomicPtr::new(dout as *mut f32);
+    let inp_atomic = AtomicPtr::new(inp as *mut f32);
+    let att_atomic = AtomicPtr::new(att as *mut f32);
+
+    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
+    if (B * T) % LOOP_UNROLL != 0 {
+        attention_backward_naive(dinp, dpreatt, datt, dout, inp, att, B, T, C, NH);
+        return;
+    }
+
+    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
+        let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+        let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
+        let datt_raw = datt_atomic.load(Ordering::SeqCst);
+        let dout_raw = dout_atomic.load(Ordering::SeqCst);
+        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+        let att_raw = att_atomic.load(Ordering::SeqCst);
+
+        for ibt in 0..LOOP_UNROLL {
+            let bt = obt + ibt;
+            let b = bt / T;
+            let t = bt % T;
+
+            for h in 0..NH {
+                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
+                let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
+                let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
+                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+
+                // Backward pass 4: through the value accumulation
+                let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
+                for t2 in 0..=t {
+                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    for i in 0..hs {
+                        *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
+                        *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
+                    }
+                }
+
+                // Backward pass 2 & 3: the softmax
+                for t2 in 0..=t {
+                    for t3 in 0..=t {
+                        let indicator = if t2 == t3 { 1.0 } else { 0.0 };
+                        let local_derivative = *att_bth.add(t2) * (indicator - *att_bth.add(t3));
+                        *dpreatt_bth.add(t3) += local_derivative * *datt_bth.add(t2);
+                    }
+                }
+
+                // Backward pass 1: the query @ key matmul
+                for t2 in 0..=t {
+                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    for i in 0..hs {
+                        *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
+                        *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Naive implementation of the backward pass for attention mechanisms, updating gradients for inputs,
+/// pre-attention weights, and attention weights.
+///
+/// # Arguments
+///
+/// * `dinp` - Gradient of the input tensor.
+/// * `dpreatt` - Gradient of the pre-attention weights.
+/// * `datt` - Gradient of the attention weights.
+/// * `dout` - Gradient of the output tensor.
+/// * `inp` - Input tensor.
+/// * `att` - Attention weights.
+/// * `B` - Batch size.
+/// * `T` - Sequence length.
+/// * `C` - Feature dimension.
+/// * `NH` - Number of attention heads.
+pub unsafe fn attention_backward_naive(
     dinp: *mut f32,
     dpreatt: *mut f32,
     datt: *mut f32,
