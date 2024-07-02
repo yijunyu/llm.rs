@@ -173,7 +173,7 @@ pub fn main() {
             model.backward();
             model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
             let duration = start.elapsed();
-            println!("step {}: train loss {} (took {:.2} ms)", step, model.mean_loss, duration.as_secs_f64() * 1000.0);
+            println!("step {}: train loss {:.6} (took {:.2} ms)", step, model.mean_loss, duration.as_secs_f64() * 1000.0);
         }
 
         // Free resources
