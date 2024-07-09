@@ -8,12 +8,12 @@ preprocess:
 	python train_gpt2.py
 
 train:	llm-rs/src/main.rs
-	cd llm-rs && cargo build --release && cp target/release/llm-rs ../train_gpt2_rs
-	./train_gpt2_rs
+	cd llm-rs && cargo build --release && cp target/release/llm-rs ../train
+	./train
 
 setup:	install preprocess
 
-all:	setup train_gpt2_rs
+all:	setup train
 
 clean:
-	rm -f train_gpt2_rs
+	rm -f train
