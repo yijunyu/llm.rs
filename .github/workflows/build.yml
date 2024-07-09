@@ -7,4 +7,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - uses: actions/setup-node@v1
-    - run: cd llm-rs && cargo build --release
+    - run: 
+        pip install --upgrade pip
+        && pip install -r requirements.txt
+        && python prepro_tinyshakespeare.py
+        && python train_gpt2.py
+        && make train
