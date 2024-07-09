@@ -1,6 +1,7 @@
 tasks:
     - name: backend
       before: |
+        pip install --upgrade pip
         pip install -r requirements.txt
         rustup default nightly
         cargo install flamegraph
@@ -9,3 +10,4 @@ tasks:
         python prepro_tinyshakespeare.py
         python train_gpt2.py
         make
+        make train
