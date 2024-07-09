@@ -7,4 +7,3 @@ tasks:
     sudo apt install linux-tools-common linux-tools-generic -y
     python prepro_tinyshakespeare.py
     python train_gpt2.py
-    make
