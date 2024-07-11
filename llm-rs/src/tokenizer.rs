@@ -1,6 +1,6 @@
-use std::path::Path;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 
 pub struct Tokenizer {
     vocab_size: u32,
@@ -44,7 +44,8 @@ impl Tokenizer {
                 header.as_mut_ptr() as *mut u8,
                 header.len() * std::mem::size_of::<u32>(),
             )
-        }).expect("Failed to read header");
+        })
+        .expect("Failed to read header");
 
         // Check magic number and version
         if header[0] != 20240328 {
@@ -58,16 +59,18 @@ impl Tokenizer {
 
         for _ in 0..tokenizer.vocab_size {
             let mut length = [0];
-            file.read_exact(&mut length).expect("Failed to read token length");
+            file.read_exact(&mut length)
+                .expect("Failed to read token length");
 
             assert!(length[0] > 0); // Every token should be at least one character
             let mut token_bytes = vec![0u8; length[0] as usize];
-            file.read_exact(&mut token_bytes).expect("Failed to read token bytes");
+            file.read_exact(&mut token_bytes)
+                .expect("Failed to read token bytes");
             let token = match String::from_utf8(token_bytes) {
                 Ok(token) => token,
                 Err(_) => String::new(),
             };
-            
+
             tokenizer.token_table.push(token);
         }
 
@@ -85,10 +88,7 @@ impl Tokenizer {
     /// # Returns
     ///
     /// The corresponding string for the token ID.
-    pub fn decode(
-        &mut self,
-        token_id: u32,
-    ) -> &str{
+    pub fn decode(&mut self, token_id: u32) -> &str {
         if !self.init_ok {
             ""
         } else if token_id < self.vocab_size {

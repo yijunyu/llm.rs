@@ -1,20 +1,18 @@
-#![allow(
-    non_snake_case,
-)]
+#![allow(non_snake_case)]
 
-pub mod gpt2;
 pub mod dataloader;
+pub mod gpt2;
 pub mod tokenizer;
 
 use std::alloc::{self, alloc, Layout};
+use std::io::{self, Write};
 use std::path::Path;
 use std::ptr;
 use std::time::Instant;
-use std::io::{self, Write};
 
 use dataloader::DataLoader;
-use tokenizer::*;
 use gpt2::*;
+use tokenizer::*;
 
 const BATCH_SIZE: usize = 4;
 const SEQ_LENGTH: usize = 64;
@@ -36,7 +34,9 @@ fn random_u32(state: &mut u64) -> u32 {
     *state ^= *state >> 12;
     *state ^= *state << 25;
     *state ^= *state >> 27;
-    ((*state).wrapping_mul(0x2545F4914F6CDD1D) >> 32).try_into().unwrap()
+    ((*state).wrapping_mul(0x2545F4914F6CDD1D) >> 32)
+        .try_into()
+        .unwrap()
 }
 
 /// Generates a random `f32` in the range [0, 1).
@@ -63,11 +63,7 @@ fn random_f32(state: &mut u64) -> f32 {
 /// # Returns
 ///
 /// The sampled index based on the given probabilities.
-fn sample_mult(
-    probabilities: *const f32, 
-    n: usize, 
-    coin: f32,
-) -> usize {
+fn sample_mult(probabilities: *const f32, n: usize, coin: f32) -> usize {
     unsafe {
         let mut cdf = 0.0;
         for i in 0..n {
@@ -150,7 +146,10 @@ pub fn main() {
                 println!("generating:\n---");
                 for t in 1..genT {
                     model.forward(gen_tokens, ptr::null(), B, T);
-                    let probs = model.acts.probs.add((t - 1) * model.config.padded_vocab_size);
+                    let probs = model
+                        .acts
+                        .probs
+                        .add((t - 1) * model.config.padded_vocab_size);
                     let coin = random_f32(&mut rng_state);
                     let next_token = sample_mult(probs, model.config.vocab_size, coin) as u32;
                     *gen_tokens.add(t) = next_token as i32;
@@ -173,7 +172,12 @@ pub fn main() {
             model.backward();
             model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
             let duration = start.elapsed();
-            println!("step {}: train loss {:.6} (took {:.2} ms)", step, model.mean_loss, duration.as_secs_f64() * 1000.0);
+            println!(
+                "step {}: train loss {:.6} (took {:.2} ms)",
+                step,
+                model.mean_loss,
+                duration.as_secs_f64() * 1000.0
+            );
         }
 
         // Free resources

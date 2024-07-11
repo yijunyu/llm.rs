@@ -1,5 +1,5 @@
-use std::ptr::null_mut;
 use std::alloc::{alloc, Layout};
+use std::ptr::null_mut;
 
 pub const NUM_ACTIVATION_TENSORS: usize = 23;
 
@@ -7,7 +7,7 @@ pub const NUM_ACTIVATION_TENSORS: usize = 23;
 pub struct ActivationTensors {
     /// Encoded (B, T, C)
     pub encoded: *mut f32,
-    
+
     /// Layer normalization 1 (L, B, T, C)
     pub ln1: *mut f32,
 
@@ -119,7 +119,10 @@ impl ActivationTensors {
     /// # Returns
     ///
     /// * Pointer to the allocated memory for activations.
-    pub unsafe fn alloc_and_point_activations(&mut self, act_sizes: &[usize; NUM_ACTIVATION_TENSORS]) -> *mut f32 {
+    pub unsafe fn alloc_and_point_activations(
+        &mut self,
+        act_sizes: &[usize; NUM_ACTIVATION_TENSORS],
+    ) -> *mut f32 {
         // Calculate the total size needed
         let num_activations: usize = act_sizes.iter().sum();
 
@@ -135,10 +138,29 @@ impl ActivationTensors {
         // Assign the tensors to the allocated memory
         let mut acts_memory_iterator = acts_memory;
         let mut ptrs: [*mut *mut f32; NUM_ACTIVATION_TENSORS] = [
-            &mut self.encoded, &mut self.ln1, &mut self.ln1_mean, &mut self.ln1_rstd, &mut self.qkv, &mut self.atty,
-            &mut self.preatt, &mut self.att, &mut self.attproj, &mut self.residual2, &mut self.ln2, &mut self.ln2_mean,
-            &mut self.ln2_rstd, &mut self.fch, &mut self.fch_gelu, &mut self.fcproj, &mut self.residual3, &mut self.lnf,
-            &mut self.lnf_mean, &mut self.lnf_rstd, &mut self.logits, &mut self.probs, &mut self.losses
+            &mut self.encoded,
+            &mut self.ln1,
+            &mut self.ln1_mean,
+            &mut self.ln1_rstd,
+            &mut self.qkv,
+            &mut self.atty,
+            &mut self.preatt,
+            &mut self.att,
+            &mut self.attproj,
+            &mut self.residual2,
+            &mut self.ln2,
+            &mut self.ln2_mean,
+            &mut self.ln2_rstd,
+            &mut self.fch,
+            &mut self.fch_gelu,
+            &mut self.fcproj,
+            &mut self.residual3,
+            &mut self.lnf,
+            &mut self.lnf_mean,
+            &mut self.lnf_rstd,
+            &mut self.logits,
+            &mut self.probs,
+            &mut self.losses,
         ];
 
         // Assign slices of the allocated memory to each tensor
@@ -146,7 +168,7 @@ impl ActivationTensors {
             **ptr = acts_memory_iterator;
             acts_memory_iterator = acts_memory_iterator.add(act_sizes[i]);
         }
-    
+
         acts_memory
     }
 }

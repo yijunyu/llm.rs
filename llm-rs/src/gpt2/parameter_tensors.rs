@@ -1,5 +1,5 @@
-use std::ptr::null_mut;
 use std::alloc::{alloc, Layout};
+use std::ptr::null_mut;
 
 pub const NUM_PARAMETER_TENSORS: usize = 16;
 
@@ -91,7 +91,10 @@ impl ParameterTensors {
     /// # Returns
     ///
     /// * Pointer to the allocated memory for parameters.
-    pub unsafe fn alloc_and_point_parameters(&mut self, param_sizes: &[usize; NUM_PARAMETER_TENSORS]) -> *mut f32 {
+    pub unsafe fn alloc_and_point_parameters(
+        &mut self,
+        param_sizes: &[usize; NUM_PARAMETER_TENSORS],
+    ) -> *mut f32 {
         // Calculate the total size needed
         let num_parameters: usize = param_sizes.iter().sum();
 
@@ -107,10 +110,22 @@ impl ParameterTensors {
         // Assign the tensors to the allocated memory
         let mut params_memory_iterator = params_memory;
         let mut ptrs: [*mut *mut f32; NUM_PARAMETER_TENSORS] = [
-            &mut self.wte, &mut self.wpe, &mut self.ln1w, &mut self.ln1b, &mut self.qkvw,
-            &mut self.qkvb, &mut self.attprojw, &mut self.attprojb, &mut self.ln2w,
-            &mut self.ln2b, &mut self.fcw, &mut self.fcb, &mut self.fcprojw, &mut self.fcprojb,
-            &mut self.lnfw, &mut self.lnfb
+            &mut self.wte,
+            &mut self.wpe,
+            &mut self.ln1w,
+            &mut self.ln1b,
+            &mut self.qkvw,
+            &mut self.qkvb,
+            &mut self.attprojw,
+            &mut self.attprojb,
+            &mut self.ln2w,
+            &mut self.ln2b,
+            &mut self.fcw,
+            &mut self.fcb,
+            &mut self.fcprojw,
+            &mut self.fcprojb,
+            &mut self.lnfw,
+            &mut self.lnfb,
         ];
 
         for (i, ptr) in ptrs.iter_mut().enumerate() {

@@ -1,6 +1,6 @@
+use rayon::prelude::*;
 use std::f32::consts::PI;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use rayon::prelude::*;
 
 const LOOP_UNROLL: usize = 8;
 
@@ -113,9 +113,9 @@ pub unsafe fn encoder_backward(
 /// * `B` - Batch size.
 /// * `T` - Sequence length.
 /// * `C` - Feature dimension.
-/// 
+///
 /// # Note
-/// 
+///
 /// Reference: https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html
 pub unsafe fn layernorm_forward(
     out: *mut f32,
@@ -285,9 +285,9 @@ pub unsafe fn layernorm_backward(
 /// * `T` - Sequence length.
 /// * `C` - Input feature dimension.
 /// * `OC` - Output feature dimension or output channels.
-/// 
+///
 /// # Note
-/// 
+///
 /// This is the most naive implementation of matrix multiplication that serves as an algorithmic reference, and as a fallback for unfriendly input shapes inside matmul_forward().
 pub unsafe fn matmul_forward_naive(
     out: *mut f32,
@@ -346,9 +346,9 @@ pub unsafe fn matmul_forward_naive(
 /// * `T` - Sequence length.
 /// * `C` - Input feature dimension.
 /// * `OC` - Output feature dimension or output channels.
-/// 
+///
 /// # Note
-/// 
+///
 /// Most of the running time is spent here and in matmul_backward, therefore, the implementation below is very mildly optimized.
 /// This function is otherwise identical to that of matmul_forward_naive().
 pub unsafe fn matmul_forward(
@@ -373,36 +373,43 @@ pub unsafe fn matmul_forward(
     }
 
     // Parallelize the outer loop using Rayon
-    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
-        // Load the AtomicPtr values into raw pointers for the current scope
-        let out_raw = out_atomic.load(Ordering::SeqCst);
-        let inp_raw = inp_atomic.load(Ordering::SeqCst);
-        let weight_raw = weight_atomic.load(Ordering::SeqCst);
-        let bias_raw = bias_atomic.load(Ordering::SeqCst);
+    (0..B * T)
+        .into_par_iter()
+        .step_by(LOOP_UNROLL)
+        .for_each(|obt| {
+            // Load the AtomicPtr values into raw pointers for the current scope
+            let out_raw = out_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let weight_raw = weight_atomic.load(Ordering::SeqCst);
+            let bias_raw = bias_atomic.load(Ordering::SeqCst);
 
-        for o in 0..OC {
-            // Initialize the result array with bias if present
-            let mut result = [0.0f32; LOOP_UNROLL];
-            for ibt in 0..LOOP_UNROLL {
-                result[ibt] = if !bias_raw.is_null() { *bias_raw.add(o) } else { 0.0f32 };
-            }
+            for o in 0..OC {
+                // Initialize the result array with bias if present
+                let mut result = [0.0f32; LOOP_UNROLL];
+                for ibt in 0..LOOP_UNROLL {
+                    result[ibt] = if !bias_raw.is_null() {
+                        *bias_raw.add(o)
+                    } else {
+                        0.0f32
+                    };
+                }
 
-            // Cache the weight value and compute dot products
-            for i in 0..C {
-                let w = *weight_raw.add(i + o * C);
+                // Cache the weight value and compute dot products
+                for i in 0..C {
+                    let w = *weight_raw.add(i + o * C);
+                    for ibt in 0..LOOP_UNROLL {
+                        let bt = obt + ibt;
+                        result[ibt] += *inp_raw.add(bt * C + i) * w;
+                    }
+                }
+
+                // Write results back to the output matrix
                 for ibt in 0..LOOP_UNROLL {
                     let bt = obt + ibt;
-                    result[ibt] += *inp_raw.add(bt * C + i) * w;
+                    *out_raw.add(bt * OC + o) = result[ibt];
                 }
             }
-
-            // Write results back to the output matrix
-            for ibt in 0..LOOP_UNROLL {
-                let bt = obt + ibt;
-                *out_raw.add(bt * OC + o) = result[ibt];
-            }
-        }
-    });
+        });
 }
 
 /// Computes the backward pass for matrix multiplication, updating gradients for inputs,
@@ -465,29 +472,31 @@ pub unsafe fn matmul_backward(
                 }
             });
         });
-    }
-    else {
+    } else {
         // Parallelize over B and T for input gradient computation
-        (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
-            let dout_raw = dout_atomic.load(Ordering::SeqCst);
-            let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-            let weight_raw = weight_atomic.load(Ordering::SeqCst);
+        (0..B * T)
+            .into_par_iter()
+            .step_by(LOOP_UNROLL)
+            .for_each(|obt| {
+                let dout_raw = dout_atomic.load(Ordering::SeqCst);
+                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+                let weight_raw = weight_atomic.load(Ordering::SeqCst);
 
-            for o in 0..OC {
-                for ibt in 0..LOOP_UNROLL {
-                    let bt = obt + ibt;
-                    let dout_bt = dout_raw.add(bt * OC + o);
-                    let dinp_bt = dinp_raw.add(bt * C);
+                for o in 0..OC {
+                    for ibt in 0..LOOP_UNROLL {
+                        let bt = obt + ibt;
+                        let dout_bt = dout_raw.add(bt * OC + o);
+                        let dinp_bt = dinp_raw.add(bt * C);
 
-                    let wrow = weight_raw.add(o * C);
-                    let d = *dout_bt;
+                        let wrow = weight_raw.add(o * C);
+                        let d = *dout_bt;
 
-                    for i in 0..C {
-                        *dinp_bt.add(i) += *wrow.add(i) * d;
+                        for i in 0..C {
+                            *dinp_bt.add(i) += *wrow.add(i) * d;
+                        }
                     }
                 }
-            }
-        });
+            });
     }
 
     // Parallelize over output channels for weight and bias gradient computation
@@ -641,66 +650,69 @@ pub unsafe fn attention_forward(
         return;
     }
 
-    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
-        let out_raw = out_atomic.load(Ordering::SeqCst);
-        let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
-        let att_raw = att_atomic.load(Ordering::SeqCst);
-        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+    (0..B * T)
+        .into_par_iter()
+        .step_by(LOOP_UNROLL)
+        .for_each(|obt| {
+            let out_raw = out_atomic.load(Ordering::SeqCst);
+            let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
+            let att_raw = att_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
 
-        for h in 0..NH {
-            for ibt in 0..LOOP_UNROLL {
-                let bt = obt + ibt;
-                let t = bt % T;
-                let b = bt / T;
+            for h in 0..NH {
+                for ibt in 0..LOOP_UNROLL {
+                    let bt = obt + ibt;
+                    let t = bt % T;
+                    let b = bt / T;
 
-                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
-                let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+                    let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
 
-                let mut maxval = f32::NEG_INFINITY;
-                for t2 in 0..=t {
-                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
-                    let mut val = 0.0;
+                    let mut maxval = f32::NEG_INFINITY;
+                    for t2 in 0..=t {
+                        let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
+                        let mut val = 0.0;
+                        for i in 0..hs {
+                            val += *query_t.add(i) * *key_t2.add(i);
+                        }
+                        val *= scale;
+                        if val > maxval {
+                            maxval = val;
+                        }
+                        *preatt_bth.add(t2) = val;
+                    }
+
+                    let mut expsum = 0.0;
+                    for t2 in 0..=t {
+                        let expv = (*preatt_bth.add(t2) - maxval).exp();
+                        expsum += expv;
+                        *att_bth.add(t2) = expv;
+                    }
+                    let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
+
+                    for t2 in 0..T {
+                        if t2 <= t {
+                            *att_bth.add(t2) *= expsum_inv;
+                        } else {
+                            *att_bth.add(t2) = 0.0;
+                        }
+                    }
+
+                    let out_bth = out_raw.add(b * T * C + t * C + h * hs);
                     for i in 0..hs {
-                        val += *query_t.add(i) * *key_t2.add(i);
+                        *out_bth.add(i) = 0.0;
                     }
-                    val *= scale;
-                    if val > maxval {
-                        maxval = val;
-                    }
-                    *preatt_bth.add(t2) = val;
-                }
-
-                let mut expsum = 0.0;
-                for t2 in 0..=t {
-                    let expv = (*preatt_bth.add(t2) - maxval).exp();
-                    expsum += expv;
-                    *att_bth.add(t2) = expv;
-                }
-                let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
-
-                for t2 in 0..T {
-                    if t2 <= t {
-                        *att_bth.add(t2) *= expsum_inv;
-                    } else {
-                        *att_bth.add(t2) = 0.0;
-                    }
-                }
-
-                let out_bth = out_raw.add(b * T * C + t * C + h * hs);
-                for i in 0..hs {
-                    *out_bth.add(i) = 0.0;
-                }
-                for t2 in 0..=t {
-                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
-                    let att_btht2 = *att_bth.add(t2);
-                    for i in 0..hs {
-                        *out_bth.add(i) += att_btht2 * *value_t2.add(i);
+                    for t2 in 0..=t {
+                        let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
+                        let att_btht2 = *att_bth.add(t2);
+                        for i in 0..hs {
+                            *out_bth.add(i) += att_btht2 * *value_t2.add(i);
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 }
 
 /// Naive implementation of the backward pass for attention mechanisms, updating gradients for inputs,
@@ -835,58 +847,62 @@ pub unsafe fn attention_backward(
         return;
     }
 
-    (0..B * T).into_par_iter().step_by(LOOP_UNROLL).for_each(|obt| {
-        let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-        let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
-        let datt_raw = datt_atomic.load(Ordering::SeqCst);
-        let dout_raw = dout_atomic.load(Ordering::SeqCst);
-        let inp_raw = inp_atomic.load(Ordering::SeqCst);
-        let att_raw = att_atomic.load(Ordering::SeqCst);
+    (0..B * T)
+        .into_par_iter()
+        .step_by(LOOP_UNROLL)
+        .for_each(|obt| {
+            let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
+            let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
+            let datt_raw = datt_atomic.load(Ordering::SeqCst);
+            let dout_raw = dout_atomic.load(Ordering::SeqCst);
+            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let att_raw = att_atomic.load(Ordering::SeqCst);
 
-        for ibt in 0..LOOP_UNROLL {
-            let bt = obt + ibt;
-            let b = bt / T;
-            let t = bt % T;
+            for ibt in 0..LOOP_UNROLL {
+                let bt = obt + ibt;
+                let b = bt / T;
+                let t = bt % T;
 
-            for h in 0..NH {
-                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
-                let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
-                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+                for h in 0..NH {
+                    let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
+                    let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
 
-                // Backward pass 4: through the value accumulation
-                let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
-                for t2 in 0..=t {
-                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
-                    let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
-                    for i in 0..hs {
-                        *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
-                        *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
+                    // Backward pass 4: through the value accumulation
+                    let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
+                    for t2 in 0..=t {
+                        let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                        let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                        for i in 0..hs {
+                            *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
+                            *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
+                        }
                     }
-                }
 
-                // Backward pass 2 & 3: the softmax
-                for t2 in 0..=t {
-                    for t3 in 0..=t {
-                        let indicator = if t2 == t3 { 1.0 } else { 0.0 };
-                        let local_derivative = *att_bth.add(t2) * (indicator - *att_bth.add(t3));
-                        *dpreatt_bth.add(t3) += local_derivative * *datt_bth.add(t2);
+                    // Backward pass 2 & 3: the softmax
+                    for t2 in 0..=t {
+                        for t3 in 0..=t {
+                            let indicator = if t2 == t3 { 1.0 } else { 0.0 };
+                            let local_derivative =
+                                *att_bth.add(t2) * (indicator - *att_bth.add(t3));
+                            *dpreatt_bth.add(t3) += local_derivative * *datt_bth.add(t2);
+                        }
                     }
-                }
 
-                // Backward pass 1: the query @ key matmul
-                for t2 in 0..=t {
-                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
-                    let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
-                    for i in 0..hs {
-                        *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
-                        *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
+                    // Backward pass 1: the query @ key matmul
+                    for t2 in 0..=t {
+                        let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                        let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                        for i in 0..hs {
+                            *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
+                            *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 }
 
 /// Applies the GELU activation function to the input tensor.
@@ -896,11 +912,7 @@ pub unsafe fn attention_backward(
 /// * `out` - Output tensor to store the GELU results.
 /// * `inp` - Input tensor.
 /// * `N` - Number of elements.
-pub unsafe fn gelu_forward(
-    out: *mut f32, 
-    inp: *const f32, 
-    N: usize
-) {
+pub unsafe fn gelu_forward(out: *mut f32, inp: *const f32, N: usize) {
     let out_atomic = AtomicPtr::new(out);
     let inp_atomic = AtomicPtr::new(inp as *mut f32);
 
@@ -925,12 +937,7 @@ pub unsafe fn gelu_forward(
 /// * `inp` - Input tensor.
 /// * `dout` - Gradient of the output tensor.
 /// * `N` - Number of elements.
-pub unsafe fn gelu_backward(
-    dinp: *mut f32,
-    inp: *const f32,
-    dout: *const f32,
-    N: usize,
-) {
+pub unsafe fn gelu_backward(dinp: *mut f32, inp: *const f32, dout: *const f32, N: usize) {
     let gelu_scaling_factor = (2.0 / PI).sqrt();
 
     let dinp_atomic = AtomicPtr::new(dinp);
@@ -958,7 +965,8 @@ pub unsafe fn gelu_backward(
         let sech_out = 1.0 / (coshf_out * coshf_out);
 
         // Compute the local gradient
-        let local_grad = 0.5 * (1.0 + tanh_out) + x * 0.5 * sech_out * gelu_scaling_factor * (1.0 + 3.0 * 0.044715 * x * x);
+        let local_grad = 0.5 * (1.0 + tanh_out)
+            + x * 0.5 * sech_out * gelu_scaling_factor * (1.0 + 3.0 * 0.044715 * x * x);
 
         // Accumulate the gradient into dinp
         *dinp_raw.add(i) += local_grad * dout_val;
@@ -973,12 +981,7 @@ pub unsafe fn gelu_backward(
 /// * `inp1` - First input tensor.
 /// * `inp2` - Second input tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_forward(
-    out: *mut f32,
-    inp1: *const f32,
-    inp2: *const f32,
-    N: usize,
-) {
+pub unsafe fn residual_forward(out: *mut f32, inp1: *const f32, inp2: *const f32, N: usize) {
     let out_atomic = AtomicPtr::new(out);
     let inp1_atomic = AtomicPtr::new(inp1 as *mut f32);
     let inp2_atomic = AtomicPtr::new(inp2 as *mut f32);
@@ -1001,12 +1004,7 @@ pub unsafe fn residual_forward(
 /// * `dinp2` - Gradient of the second input tensor.
 /// * `dout` - Gradient of the output tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_backward(
-    dinp1: *mut f32,
-    dinp2: *mut f32,
-    dout: *const f32,
-    N: usize,
-) {
+pub unsafe fn residual_backward(dinp1: *mut f32, dinp2: *mut f32, dout: *const f32, N: usize) {
     let dinp1_atomic = AtomicPtr::new(dinp1);
     let dinp2_atomic = AtomicPtr::new(dinp2);
     let dout_atomic = AtomicPtr::new(dout as *mut f32);

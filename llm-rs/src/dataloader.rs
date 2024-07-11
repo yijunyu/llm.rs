@@ -8,7 +8,6 @@ pub struct DataLoader {
     // ----------------------------------------------------------------------------
     // Hyperparameters
     // ----------------------------------------------------------------------------
-
     /// Batch size
     pub B: usize,
 
@@ -18,7 +17,6 @@ pub struct DataLoader {
     // ----------------------------------------------------------------------------
     // Input handling and its state
     // ----------------------------------------------------------------------------
-
     /// File for tokens
     pub tokens_file: Option<File>,
 
@@ -31,7 +29,6 @@ pub struct DataLoader {
     // ----------------------------------------------------------------------------
     // Output memory
     // ----------------------------------------------------------------------------
-
     /// Pointer to batch memory
     pub batch: *mut i32,
 
@@ -44,7 +41,6 @@ pub struct DataLoader {
     // ----------------------------------------------------------------------------
     // Convenience variables
     // ----------------------------------------------------------------------------
-
     /// Number of batches
     pub num_batches: usize,
 }
@@ -61,11 +57,7 @@ impl DataLoader {
     /// # Returns
     ///
     /// A new `DataLoader` instance.
-    pub fn new(
-        filename: &Path,
-        B: usize,
-        T: usize,
-    ) -> Self {
+    pub fn new(filename: &Path, B: usize, T: usize) -> Self {
         let mut loader = DataLoader {
             B,
             T,
@@ -75,7 +67,7 @@ impl DataLoader {
             batch: ptr::null_mut(),
             inputs: ptr::null_mut(),
             targets: ptr::null_mut(),
-            num_batches: 0
+            num_batches: 0,
         };
 
         loader.tokens_file = match File::open(filename) {
@@ -110,7 +102,8 @@ impl DataLoader {
 
         // Allocate space for B*T + 1 integers to store the inputs and targets
         unsafe {
-            let layout = Layout::array::<i32>((B * T + 1) * mem::size_of::<i32>()).expect("Layout error");
+            let layout =
+                Layout::array::<i32>((B * T + 1) * mem::size_of::<i32>()).expect("Layout error");
             loader.batch = std::alloc::alloc(layout) as *mut i32;
             loader.inputs = loader.batch;
             loader.targets = loader.batch.add(1); // Targets are shifted by one
@@ -131,14 +124,18 @@ impl DataLoader {
         let T = self.T;
 
         // If we are at the end of the file, loop back to the beginning
-        if self.current_position + ((B * T + 1) * std::mem::size_of::<i32>()) as u64 > self.file_size {
+        if self.current_position + ((B * T + 1) * std::mem::size_of::<i32>()) as u64
+            > self.file_size
+        {
             self.current_position = 0;
         }
 
         // Read the B*T+1 integers from the file into batch
         if let Some(tokens_file) = &mut self.tokens_file {
             // seek to the current position in the file
-            tokens_file.seek(SeekFrom::Start(self.current_position)).expect("Seek Failed");
+            tokens_file
+                .seek(SeekFrom::Start(self.current_position))
+                .expect("Seek Failed");
 
             // read B*T+1 integers from the file into batch
             let mut buffer = vec![0; (B * T + 1) * std::mem::size_of::<i32>()];
@@ -166,7 +163,8 @@ impl DataLoader {
         }
         unsafe {
             if !self.batch.is_null() {
-                let layout = std::alloc::Layout::array::<i32>(self.B * self.T + 1).expect("Layout error");
+                let layout =
+                    std::alloc::Layout::array::<i32>(self.B * self.T + 1).expect("Layout error");
                 std::alloc::dealloc(self.batch as *mut u8, layout);
             }
         }

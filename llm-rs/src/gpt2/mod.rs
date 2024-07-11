@@ -1,16 +1,16 @@
-mod parameter_tensors;
 mod activation_tensors;
+mod parameter_tensors;
 mod util;
 
+use core::slice;
 use std::alloc::{self, alloc, Layout};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::{ptr, mem};
-use core::slice;
+use std::{mem, ptr};
 
-use parameter_tensors::*;
 use activation_tensors::*;
+use parameter_tensors::*;
 use util::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,12 +155,14 @@ impl GPT2 {
 
         // Read model header
         let mut model_header = [0; 256];
-        model_file.read_exact(unsafe {
-            slice::from_raw_parts_mut(
-                model_header.as_mut_ptr() as *mut u8,
-                model_header.len() * mem::size_of::<i32>(),
-            )
-        }).expect("Failed to read model header");
+        model_file
+            .read_exact(unsafe {
+                slice::from_raw_parts_mut(
+                    model_header.as_mut_ptr() as *mut u8,
+                    model_header.len() * mem::size_of::<i32>(),
+                )
+            })
+            .expect("Failed to read model header");
 
         // Check magic number and version
         if model_header[0] != 20240326 {
@@ -219,12 +221,12 @@ impl GPT2 {
         // Read in all the parameters from file
         unsafe {
             model.params_memory = model.params.alloc_and_point_parameters(&model.param_sizes);
-            model_file.read_exact(
-                slice::from_raw_parts_mut(
+            model_file
+                .read_exact(slice::from_raw_parts_mut(
                     model.params_memory as *mut u8,
                     num_parameters * mem::size_of::<f32>(),
-                )
-            ).expect("Failed to read parameters");
+                ))
+                .expect("Failed to read parameters");
         }
 
         model
@@ -240,13 +242,7 @@ impl GPT2 {
     /// * `targets` - Target tensor containing token indices for loss calculation (optional).
     /// * `B` - Batch size.
     /// * `T` - Sequence length.
-    pub fn forward(
-        &mut self,
-        inputs: *const i32,
-        targets: *const i32,
-        B: usize,
-        T: usize,
-    ) {
+    pub fn forward(&mut self, inputs: *const i32, targets: *const i32, B: usize, T: usize) {
         // Ensure the model was initialized or error out
         if self.params_memory.is_null() {
             panic!("Error: model was not initialized properly.");
@@ -278,12 +274,12 @@ impl GPT2 {
             // Allocate space for activations
             self.act_sizes[0] = B * T * C; // encoded
             self.act_sizes[1] = L * B * T * C; // ln1
-            self.act_sizes[2] = L * B * T;  // ln1_mean
-            self.act_sizes[3] = L * B * T;  // ln1_rstd
+            self.act_sizes[2] = L * B * T; // ln1_mean
+            self.act_sizes[3] = L * B * T; // ln1_rstd
             self.act_sizes[4] = L * B * T * 3 * C; // qkv
-            self.act_sizes[5] = L * B * T * C;  // atty
-            self.act_sizes[6] = L * B * NH * T * T;  // preatt
-            self.act_sizes[7] = L * B * NH * T * T;  // att
+            self.act_sizes[5] = L * B * T * C; // atty
+            self.act_sizes[6] = L * B * NH * T * T; // preatt
+            self.act_sizes[7] = L * B * NH * T * T; // att
             self.act_sizes[8] = L * B * T * C; // attproj
             self.act_sizes[9] = L * B * T * C; // residual2
             self.act_sizes[10] = L * B * T * C; // ln2
@@ -299,7 +295,7 @@ impl GPT2 {
             self.act_sizes[20] = B * T * Vp; // logits
             self.act_sizes[21] = B * T * Vp; // probs
             self.act_sizes[22] = B * T; // losses
-            
+
             let num_activations: usize = self.act_sizes.iter().sum();
             println!("num_activations: {}", num_activations);
             self.num_activations = num_activations;
@@ -315,7 +311,10 @@ impl GPT2 {
         } else {
             // Validate B, T is consistent with how we've allocated the memory before
             if B != self.batch_size || T != self.seq_len {
-                panic!("Model: B={} T={}, Desired: B={} T={}", self.batch_size, self.seq_len, B, T);
+                panic!(
+                    "Model: B={} T={}, Desired: B={} T={}",
+                    self.batch_size, self.seq_len, B, T
+                );
             }
         }
 
@@ -336,7 +335,11 @@ impl GPT2 {
             encoder_forward(acts.encoded, inputs, params.wte, params.wpe, B, T, C);
 
             for l in 0..L {
-                residual = if l == 0 { acts.encoded } else { acts.residual3.add((l - 1) * B * T * C) };
+                residual = if l == 0 {
+                    acts.encoded
+                } else {
+                    acts.residual3.add((l - 1) * B * T * C)
+                };
 
                 // Get the pointers of the weights for this layer
                 let l_ln1w = params.ln1w.add(l * C);
@@ -371,12 +374,24 @@ impl GPT2 {
                 let l_residual3 = acts.residual3.add(l * B * T * C);
 
                 // Now do the forward pass
-                layernorm_forward(l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B, T, C);
+                layernorm_forward(
+                    l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B, T, C,
+                );
                 matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
                 attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
                 matmul_forward(l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
                 residual_forward(l_residual2, residual, l_attproj, B * T * C);
-                layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C);
+                layernorm_forward(
+                    l_ln2,
+                    l_ln2_mean,
+                    l_ln2_rstd,
+                    l_residual2,
+                    l_ln2w,
+                    l_ln2b,
+                    B,
+                    T,
+                    C,
+                );
                 matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
                 gelu_forward(l_fch_gelu, l_fch, B * T * 4 * C);
                 matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4 * C, C);
@@ -384,7 +399,17 @@ impl GPT2 {
             }
 
             residual = acts.residual3.add((L - 1) * B * T * C); // last residual is in residual3
-            layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
+            layernorm_forward(
+                acts.lnf,
+                acts.lnf_mean,
+                acts.lnf_rstd,
+                residual,
+                params.lnfw,
+                params.lnfb,
+                B,
+                T,
+                C,
+            );
             matmul_forward(acts.logits, acts.lnf, params.wte, ptr::null(), B, T, C, Vp);
             softmax_forward(acts.probs, acts.logits, B, T, V, Vp);
 
@@ -546,17 +571,75 @@ impl GPT2 {
 
             // Backprop this layer
             residual_backward(dl_residual2, dl_fcproj, dl_residual3, B * T * C);
-            matmul_backward(dl_fch_gelu, dl_fcprojw, dl_fcprojb, dl_fcproj, l_fch_gelu, l_fcprojw, B, T, 4 * C, C);
+            matmul_backward(
+                dl_fch_gelu,
+                dl_fcprojw,
+                dl_fcprojb,
+                dl_fcproj,
+                l_fch_gelu,
+                l_fcprojw,
+                B,
+                T,
+                4 * C,
+                C,
+            );
             gelu_backward(dl_fch, l_fch, dl_fch_gelu, B * T * 4 * C);
             matmul_backward(dl_ln2, dl_fcw, dl_fcb, dl_fch, l_ln2, l_fcw, B, T, C, 4 * C);
-            layernorm_backward(dl_residual2, dl_ln2w, dl_ln2b, dl_ln2, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C);
+            layernorm_backward(
+                dl_residual2,
+                dl_ln2w,
+                dl_ln2b,
+                dl_ln2,
+                l_residual2,
+                l_ln2w,
+                l_ln2_mean,
+                l_ln2_rstd,
+                B,
+                T,
+                C,
+            );
             residual_backward(dresidual, dl_attproj, dl_residual2, B * T * C);
-            matmul_backward(dl_atty, dl_attprojw, dl_attprojb, dl_attproj, l_atty, l_attprojw, B, T, C, C);
-            attention_backward(dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B, T, C, NH);
-            matmul_backward(dl_ln1, dl_qkvw, dl_qkvb, dl_qkv, l_ln1, l_qkvw, B, T, C, 3 * C);
-            layernorm_backward(dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C);
+            matmul_backward(
+                dl_atty,
+                dl_attprojw,
+                dl_attprojb,
+                dl_attproj,
+                l_atty,
+                l_attprojw,
+                B,
+                T,
+                C,
+                C,
+            );
+            attention_backward(
+                dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B, T, C, NH,
+            );
+            matmul_backward(
+                dl_ln1,
+                dl_qkvw,
+                dl_qkvb,
+                dl_qkv,
+                l_ln1,
+                l_qkvw,
+                B,
+                T,
+                C,
+                3 * C,
+            );
+            layernorm_backward(
+                dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B,
+                T, C,
+            );
         }
-        encoder_backward(grads.wte, grads.wpe, grads_acts.encoded, self.inputs, B, T, C);
+        encoder_backward(
+            grads.wte,
+            grads.wpe,
+            grads_acts.encoded,
+            self.inputs,
+            B,
+            T,
+            C,
+        );
     }
 
     /// Sets all gradients in the model to zero.
@@ -574,7 +657,8 @@ impl GPT2 {
 
         if !self.grads_acts_memory.is_null() {
             // Create a slice from the grads_acts_memory pointer
-            let grads_acts_slice = slice::from_raw_parts_mut(self.grads_acts_memory, self.num_activations);
+            let grads_acts_slice =
+                slice::from_raw_parts_mut(self.grads_acts_memory, self.num_activations);
             // Set all elements in the grads_acts_slice to 0
             ptr::write_bytes(grads_acts_slice.as_mut_ptr(), 0, self.num_activations);
         }
@@ -628,7 +712,8 @@ impl GPT2 {
             *self.v_memory.add(i) = v;
 
             // Update the parameters
-            *self.params_memory.add(i) -= learning_rate * (m_hat / (v_hat.sqrt() + eps) + weight_decay * param);
+            *self.params_memory.add(i) -=
+                learning_rate * (m_hat / (v_hat.sqrt() + eps) + weight_decay * param);
         }
     }
 
