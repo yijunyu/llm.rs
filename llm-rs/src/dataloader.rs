@@ -1,8 +1,11 @@
-use std::alloc::Layout;
+use std::alloc::{alloc, Layout};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::{mem, ptr};
+use std::mem;
+use std::ptr::null_mut;
+
+use crate::send_ptr::SendPtr;
 
 pub struct DataLoader {
     // ----------------------------------------------------------------------------
@@ -30,13 +33,13 @@ pub struct DataLoader {
     // Output memory
     // ----------------------------------------------------------------------------
     /// Pointer to batch memory
-    pub batch: *mut i32,
+    pub batch: SendPtr<i32>,
 
     /// Pointer to input tokens
-    pub inputs: *mut i32,
+    pub inputs: SendPtr<i32>,
 
     /// Pointer to target tokens
-    pub targets: *mut i32,
+    pub targets: SendPtr<i32>,
 
     // ----------------------------------------------------------------------------
     // Convenience variables
@@ -64,9 +67,9 @@ impl DataLoader {
             tokens_file: None,
             file_size: 0,
             current_position: 0,
-            batch: ptr::null_mut(),
-            inputs: ptr::null_mut(),
-            targets: ptr::null_mut(),
+            batch: SendPtr::new(null_mut()),
+            inputs: SendPtr::new(null_mut()),
+            targets: SendPtr::new(null_mut()),
             num_batches: 0,
         };
 
@@ -104,9 +107,9 @@ impl DataLoader {
         unsafe {
             let layout =
                 Layout::array::<i32>((B * T + 1) * mem::size_of::<i32>()).expect("Layout error");
-            loader.batch = std::alloc::alloc(layout) as *mut i32;
+            loader.batch.ptr = alloc(layout) as *mut i32;
             loader.inputs = loader.batch;
-            loader.targets = loader.batch.add(1); // Targets are shifted by one
+            loader.targets.ptr = loader.batch.ptr.add(1); // Targets are shifted by one
             loader.num_batches = (loader.file_size as usize) / (B * T * std::mem::size_of::<i32>());
         }
 
@@ -143,7 +146,7 @@ impl DataLoader {
 
             // copy the buffer into the batch pointer
             unsafe {
-                let batch_slice = std::slice::from_raw_parts_mut(self.batch, B * T + 1);
+                let batch_slice = std::slice::from_raw_parts_mut(self.batch.ptr, B * T + 1);
                 for (i, chunk) in buffer.chunks_exact(std::mem::size_of::<i32>()).enumerate() {
                     batch_slice[i] = i32::from_ne_bytes(chunk.try_into().unwrap());
                 }
@@ -162,14 +165,14 @@ impl DataLoader {
             drop(file); // Close the file by dropping it
         }
         unsafe {
-            if !self.batch.is_null() {
+            if !self.batch.ptr.is_null() {
                 let layout =
                     std::alloc::Layout::array::<i32>(self.B * self.T + 1).expect("Layout error");
-                std::alloc::dealloc(self.batch as *mut u8, layout);
+                std::alloc::dealloc(self.batch.ptr as *mut u8, layout);
             }
         }
-        self.batch = ptr::null_mut();
-        self.inputs = ptr::null_mut();
-        self.targets = ptr::null_mut();
+        self.batch = SendPtr::new(null_mut());
+        self.inputs = SendPtr::new(null_mut());
+        self.targets = SendPtr::new(null_mut());
     }
 }

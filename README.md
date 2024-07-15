@@ -26,11 +26,11 @@ Currently, the project is undergoing manual updates to find performance improvem
 
 ## Performance
 
-Currently this implementation is still slower than the C version on this system which can be seen from the breakdown below:
+Currently this implementation is still slower than the C version based on the following benchmarks:
 |                               | C      | Rust   |
 |-------------------------------|--------|--------|
-| Intel Core i7-9700 8-core     | 2.447s | 2.536s |
-| Intel Xeon E5-2690 v3 12-core | 2.155s | 2.480s |
+| Intel Core i7-9700 8-core     | 2.447s | 2.530s |
+| Intel Xeon E5-2690 v3 12-core | 2.155s | 2.476s |
 
 ## Quick Start
 

@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use std::f32::consts::PI;
-use std::sync::atomic::{AtomicPtr, Ordering};
+
+use crate::send_ptr::SendPtr;
 
 const LOOP_UNROLL: usize = 8;
 
@@ -21,30 +22,25 @@ const LOOP_UNROLL: usize = 8;
 /// * `T` - Sequence length.
 /// * `C` - Embedding dimension.
 pub unsafe fn encoder_forward(
-    out: *mut f32,
-    inp: *const i32,
-    wte: *const f32,
-    wpe: *const f32,
+    out: SendPtr<f32>,
+    inp: SendPtr<i32>,
+    wte: SendPtr<f32>,
+    wpe: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
 ) {
-    let out_atomic = AtomicPtr::new(out);
-    let inp_atomic = AtomicPtr::new(inp as *mut i32);
-    let wte_atomic = AtomicPtr::new(wte as *mut f32);
-    let wpe_atomic = AtomicPtr::new(wpe as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let out_raw = out_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let wte_raw = wte_atomic.load(Ordering::SeqCst);
-            let wpe_raw = wpe_atomic.load(Ordering::SeqCst);
+            let out = out;
+            let inp = inp;
+            let wte = wte;
+            let wpe = wpe;
 
-            let out_bt = out_raw.add(b * T * C + t * C);
-            let ix = *inp_raw.add(b * T + t) as usize;
-            let wte_ix = wte_raw.add(ix * C);
-            let wpe_t = wpe_raw.add(t * C);
+            let out_bt = out.ptr.add(b * T * C + t * C);
+            let ix = *inp.ptr.add(b * T + t) as usize;
+            let wte_ix = wte.ptr.add(ix * C);
+            let wpe_t = wpe.ptr.add(t * C);
 
             for i in 0..C {
                 *out_bt.add(i) = *wte_ix.add(i) + *wpe_t.add(i);
@@ -65,30 +61,25 @@ pub unsafe fn encoder_forward(
 /// * `T` - Sequence length.
 /// * `C` - Embedding dimension.
 pub unsafe fn encoder_backward(
-    dwte: *mut f32,
-    dwpe: *mut f32,
-    dout: *const f32,
-    inp: *const i32,
+    dwte: SendPtr<f32>,
+    dwpe: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<i32>,
     B: usize,
     T: usize,
     C: usize,
 ) {
-    let dwte_atomic = AtomicPtr::new(dwte);
-    let dwpe_atomic = AtomicPtr::new(dwpe);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-    let inp_atomic = AtomicPtr::new(inp as *mut i32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let dwte_raw = dwte_atomic.load(Ordering::SeqCst);
-            let dwpe_raw = dwpe_atomic.load(Ordering::SeqCst);
-            let dout_raw = dout_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let dwte = dwte;
+            let dwpe = dwpe;
+            let dout = dout;
+            let inp = inp;
 
-            let dout_bt = dout_raw.add(b * T * C + t * C);
-            let ix = *inp_raw.add(b * T + t) as usize;
-            let dwte_ix = dwte_raw.add(ix * C);
-            let dwpe_t = dwpe_raw.add(t * C);
+            let dout_bt = dout.ptr.add(b * T * C + t * C);
+            let ix = *inp.ptr.add(b * T + t) as usize;
+            let dwte_ix = dwte.ptr.add(ix * C);
+            let dwpe_t = dwpe.ptr.add(t * C);
 
             for i in 0..C {
                 let d = *dout_bt.add(i);
@@ -118,36 +109,29 @@ pub unsafe fn encoder_backward(
 ///
 /// Reference: https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html
 pub unsafe fn layernorm_forward(
-    out: *mut f32,
-    mean: *mut f32,
-    rstd: *mut f32,
-    inp: *const f32,
-    weight: *const f32,
-    bias: *const f32,
+    out: SendPtr<f32>,
+    mean: SendPtr<f32>,
+    rstd: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    bias: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
 ) {
     let eps: f32 = 1e-5;
 
-    let out_atomic = AtomicPtr::new(out);
-    let mean_atomic = AtomicPtr::new(mean);
-    let rstd_atomic = AtomicPtr::new(rstd);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let weight_atomic = AtomicPtr::new(weight as *mut f32);
-    let bias_atomic = AtomicPtr::new(bias as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let out_raw = out_atomic.load(Ordering::SeqCst);
-            let mean_raw = mean_atomic.load(Ordering::SeqCst);
-            let rstd_raw = rstd_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let weight_raw = weight_atomic.load(Ordering::SeqCst);
-            let bias_raw = bias_atomic.load(Ordering::SeqCst);
+            let out = out;
+            let mean = mean;
+            let rstd = rstd;
+            let inp = inp;
+            let weight = weight;
+            let bias = bias;
 
             // Calculate the base address for inp[b,t,:]
-            let x = inp_raw.add(b * T * C + t * C);
+            let x = inp.ptr.add(b * T * C + t * C);
 
             // Calculate the mean
             let mut m: f32 = 0.0;
@@ -168,16 +152,16 @@ pub unsafe fn layernorm_forward(
             let s: f32 = 1.0 / (v + eps).sqrt();
 
             // Calculate the base address for out[b,t,:]
-            let out_bt = out_raw.add(b * T * C + t * C);
+            let out_bt = out.ptr.add(b * T * C + t * C);
             for i in 0..C {
                 let n = s * (*x.add(i) - m); // Normalize
-                let o = n * *weight_raw.add(i) + *bias_raw.add(i); // Scale and shift
+                let o = n * *weight.ptr.add(i) + *bias.ptr.add(i); // Scale and shift
                 *out_bt.add(i) = o; // Write
             }
 
             // Cache the mean and rstd for the backward pass
-            *mean_raw.add(b * T + t) = m;
-            *rstd_raw.add(b * T + t) = s;
+            *mean.ptr.add(b * T + t) = m;
+            *rstd.ptr.add(b * T + t) = s;
         });
     });
 }
@@ -199,51 +183,42 @@ pub unsafe fn layernorm_forward(
 /// * `T` - Sequence length.
 /// * `C` - Feature dimension.
 pub unsafe fn layernorm_backward(
-    dinp: *mut f32,
-    dweight: *mut f32,
-    dbias: *mut f32,
-    dout: *const f32,
-    inp: *const f32,
-    weight: *const f32,
-    mean: *const f32,
-    rstd: *const f32,
+    dinp: SendPtr<f32>,
+    dweight: SendPtr<f32>,
+    dbias: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    mean: SendPtr<f32>,
+    rstd: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
 ) {
-    let dinp_atomic = AtomicPtr::new(dinp);
-    let dweight_atomic = AtomicPtr::new(dweight);
-    let dbias_atomic = AtomicPtr::new(dbias);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let weight_atomic = AtomicPtr::new(weight as *mut f32);
-    let mean_atomic = AtomicPtr::new(mean as *mut f32);
-    let rstd_atomic = AtomicPtr::new(rstd as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-            let dweight_raw = dweight_atomic.load(Ordering::SeqCst);
-            let dbias_raw = dbias_atomic.load(Ordering::SeqCst);
-            let dout_raw = dout_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let weight_raw = weight_atomic.load(Ordering::SeqCst);
-            let mean_raw = mean_atomic.load(Ordering::SeqCst);
-            let rstd_raw = rstd_atomic.load(Ordering::SeqCst);
+            let dinp = dinp;
+            let dweight = dweight;
+            let dbias = dbias;
+            let dout = dout;
+            let inp = inp;
+            let weight = weight;
+            let mean = mean;
+            let rstd = rstd;
 
             // Calculate the base addresses
-            let dout_bt = dout_raw.add(b * T * C + t * C);
-            let inp_bt = inp_raw.add(b * T * C + t * C);
-            let dinp_bt = dinp_raw.add(b * T * C + t * C);
-            let mean_bt = *mean_raw.add(b * T + t);
-            let rstd_bt = *rstd_raw.add(b * T + t);
+            let dout_bt = dout.ptr.add(b * T * C + t * C);
+            let inp_bt = inp.ptr.add(b * T * C + t * C);
+            let dinp_bt = dinp.ptr.add(b * T * C + t * C);
+            let mean_bt = *mean.ptr.add(b * T + t);
+            let rstd_bt = *rstd.ptr.add(b * T + t);
 
             // First: two reduce operations
             let mut dnorm_mean: f32 = 0.0;
             let mut dnorm_norm_mean: f32 = 0.0;
             for i in 0..C {
                 let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
-                let dnorm_i = *weight_raw.add(i) * *dout_bt.add(i);
+                let dnorm_i = *weight.ptr.add(i) * *dout_bt.add(i);
                 dnorm_mean += dnorm_i;
                 dnorm_norm_mean += dnorm_i * norm_bti;
             }
@@ -253,13 +228,13 @@ pub unsafe fn layernorm_backward(
             // Now iterate again and accumulate all the gradients
             for i in 0..C {
                 let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
-                let dnorm_i = *weight_raw.add(i) * *dout_bt.add(i);
+                let dnorm_i = *weight.ptr.add(i) * *dout_bt.add(i);
 
                 // Gradient contribution to bias
-                *dbias_raw.add(i) += *dout_bt.add(i);
+                *dbias.ptr.add(i) += *dout_bt.add(i);
 
                 // Gradient contribution to weight
-                *dweight_raw.add(i) += norm_bti * *dout_bt.add(i);
+                *dweight.ptr.add(i) += norm_bti * *dout_bt.add(i);
 
                 // Gradient contribution to input
                 let mut dval: f32 = 0.0;
@@ -290,45 +265,40 @@ pub unsafe fn layernorm_backward(
 ///
 /// This is the most naive implementation of matrix multiplication that serves as an algorithmic reference, and as a fallback for unfriendly input shapes inside matmul_forward().
 pub unsafe fn matmul_forward_naive(
-    out: *mut f32,
-    inp: *const f32,
-    weight: *const f32,
-    bias: *const f32,
+    out: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    bias: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
     OC: usize,
 ) {
-    let out_atomic = AtomicPtr::new(out);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let weight_atomic = AtomicPtr::new(weight as *mut f32);
-    let bias_atomic = AtomicPtr::new(bias as *mut f32);
-
     // Create a parallel iterator over the batch dimension
     (0..B).into_par_iter().for_each(|b| {
         // Create a parallel iterator over the sequence length
         (0..T).into_par_iter().for_each(|t| {
             // Load the AtomicPtr values into raw pointers for the current scope
-            let out_raw = out_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let weight_raw = weight_atomic.load(Ordering::SeqCst);
-            let bias_raw = bias_atomic.load(Ordering::SeqCst);
+            let out = out;
+            let inp = inp;
+            let weight = weight;
+            let bias = bias;
 
             let bt = b * T + t;
             // Iterate over the output channels
             for o in 0..OC {
                 // Initialize the output value with the bias if provided, otherwise 0.0
-                let mut val = if !bias_raw.is_null() {
-                    *bias_raw.add(o)
+                let mut val = if !bias.ptr.is_null() {
+                    *bias.ptr.add(o)
                 } else {
                     0.0f32
                 };
                 // Perform the dot product
                 for i in 0..C {
-                    val += *inp_raw.add(bt * C + i) * *weight_raw.add(o * C + i);
+                    val += *inp.ptr.add(bt * C + i) * *weight.ptr.add(o * C + i);
                 }
                 // Store the result
-                *out_raw.add(bt * OC + o) = val;
+                *out.ptr.add(bt * OC + o) = val;
             }
         });
     });
@@ -352,20 +322,15 @@ pub unsafe fn matmul_forward_naive(
 /// Most of the running time is spent here and in matmul_backward, therefore, the implementation below is very mildly optimized.
 /// This function is otherwise identical to that of matmul_forward_naive().
 pub unsafe fn matmul_forward(
-    out: *mut f32,
-    inp: *const f32,
-    weight: *const f32,
-    bias: *const f32,
+    out: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    bias: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
     OC: usize,
 ) {
-    let out_atomic = AtomicPtr::new(out);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let weight_atomic = AtomicPtr::new(weight as *mut f32);
-    let bias_atomic = AtomicPtr::new(bias as *mut f32);
-
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
         matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
@@ -378,17 +343,17 @@ pub unsafe fn matmul_forward(
         .step_by(LOOP_UNROLL)
         .for_each(|obt| {
             // Load the AtomicPtr values into raw pointers for the current scope
-            let out_raw = out_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let weight_raw = weight_atomic.load(Ordering::SeqCst);
-            let bias_raw = bias_atomic.load(Ordering::SeqCst);
+            let out = out;
+            let inp = inp;
+            let weight = weight;
+            let bias = bias;
 
             for o in 0..OC {
                 // Initialize the result array with bias if present
                 let mut result = [0.0f32; LOOP_UNROLL];
                 for ibt in 0..LOOP_UNROLL {
-                    result[ibt] = if !bias_raw.is_null() {
-                        *bias_raw.add(o)
+                    result[ibt] = if !bias.ptr.is_null() {
+                        *bias.ptr.add(o)
                     } else {
                         0.0f32
                     };
@@ -396,17 +361,17 @@ pub unsafe fn matmul_forward(
 
                 // Cache the weight value and compute dot products
                 for i in 0..C {
-                    let w = *weight_raw.add(i + o * C);
+                    let w = *weight.ptr.add(i + o * C);
                     for ibt in 0..LOOP_UNROLL {
                         let bt = obt + ibt;
-                        result[ibt] += *inp_raw.add(bt * C + i) * w;
+                        result[ibt] += *inp.ptr.add(bt * C + i) * w;
                     }
                 }
 
                 // Write results back to the output matrix
                 for ibt in 0..LOOP_UNROLL {
                     let bt = obt + ibt;
-                    *out_raw.add(bt * OC + o) = result[ibt];
+                    *out.ptr.add(bt * OC + o) = result[ibt];
                 }
             }
         });
@@ -433,38 +398,31 @@ pub unsafe fn matmul_forward(
 /// Most of the running time is spent here and in matmul_forward.
 /// This backward could be done in a single "round" of loops but that doesn't afford an efficient parallelization strategy.
 pub unsafe fn matmul_backward(
-    dinp: *mut f32,
-    dweight: *mut f32,
-    dbias: *mut f32,
-    dout: *const f32,
-    inp: *const f32,
-    weight: *const f32,
+    dinp: SendPtr<f32>,
+    dweight: SendPtr<f32>,
+    dbias: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
     OC: usize,
 ) {
-    let dinp_atomic = AtomicPtr::new(dinp);
-    let dweight_atomic = AtomicPtr::new(dweight);
-    let dbias_atomic = AtomicPtr::new(dbias);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let weight_atomic = AtomicPtr::new(weight as *mut f32);
-
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
         // Parallelize over B and T for input gradient computation
         (0..B).into_par_iter().for_each(|b| {
             (0..T).into_par_iter().for_each(|t| {
-                let dout_raw = dout_atomic.load(Ordering::SeqCst);
-                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-                let weight_raw = weight_atomic.load(Ordering::SeqCst);
+                let dout = dout;
+                let dinp = dinp;
+                let weight = weight;
 
-                let dout_bt = dout_raw.add(b * T * OC + t * OC);
-                let dinp_bt = dinp_raw.add(b * T * C + t * C);
+                let dout_bt = dout.ptr.add(b * T * OC + t * OC);
+                let dinp_bt = dinp.ptr.add(b * T * C + t * C);
 
                 for o in 0..OC {
-                    let wrow = weight_raw.add(o * C);
+                    let wrow = weight.ptr.add(o * C);
                     let d = *dout_bt.add(o);
                     for i in 0..C {
                         *dinp_bt.add(i) += *wrow.add(i) * d;
@@ -478,17 +436,17 @@ pub unsafe fn matmul_backward(
             .into_par_iter()
             .step_by(LOOP_UNROLL)
             .for_each(|obt| {
-                let dout_raw = dout_atomic.load(Ordering::SeqCst);
-                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-                let weight_raw = weight_atomic.load(Ordering::SeqCst);
+                let dout = dout;
+                let dinp = dinp;
+                let weight = weight;
 
                 for o in 0..OC {
                     for ibt in 0..LOOP_UNROLL {
                         let bt = obt + ibt;
-                        let dout_bt = dout_raw.add(bt * OC + o);
-                        let dinp_bt = dinp_raw.add(bt * C);
+                        let dout_bt = dout.ptr.add(bt * OC + o);
+                        let dinp_bt = dinp.ptr.add(bt * C);
 
-                        let wrow = weight_raw.add(o * C);
+                        let wrow = weight.ptr.add(o * C);
                         let d = *dout_bt;
 
                         for i in 0..C {
@@ -503,18 +461,18 @@ pub unsafe fn matmul_backward(
     (0..OC).into_par_iter().for_each(|o| {
         for b in 0..B {
             for t in 0..T {
-                let dout_raw = dout_atomic.load(Ordering::SeqCst);
-                let inp_raw = inp_atomic.load(Ordering::SeqCst);
-                let dweight_raw = dweight_atomic.load(Ordering::SeqCst);
-                let dbias_raw = dbias_atomic.load(Ordering::SeqCst);
+                let dout = dout;
+                let inp = inp;
+                let dweight = dweight;
+                let dbias = dbias;
 
-                let dout_bt = dout_raw.add(b * T * OC + t * OC);
-                let inp_bt = inp_raw.add(b * T * C + t * C);
-                let dwrow = dweight_raw.add(o * C);
+                let dout_bt = dout.ptr.add(b * T * OC + t * OC);
+                let inp_bt = inp.ptr.add(b * T * C + t * C);
+                let dwrow = dweight.ptr.add(o * C);
 
                 let d = *dout_bt.add(o);
-                if !dbias_raw.is_null() {
-                    *dbias_raw.add(o) += d;
+                if !dbias.ptr.is_null() {
+                    *dbias.ptr.add(o) += d;
                 }
                 for i in 0..C {
                     *dwrow.add(i) += *inp_bt.add(i) * d;
@@ -537,10 +495,10 @@ pub unsafe fn matmul_backward(
 /// * `C` - Feature dimension.
 /// * `NH` - Number of attention heads.
 pub unsafe fn attention_forward_naive(
-    out: *mut f32,
-    preatt: *mut f32,
-    att: *mut f32,
-    inp: *const f32,
+    out: SendPtr<f32>,
+    preatt: SendPtr<f32>,
+    att: SendPtr<f32>,
+    inp: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
@@ -550,26 +508,21 @@ pub unsafe fn attention_forward_naive(
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    let out_atomic = AtomicPtr::new(out);
-    let preatt_atomic = AtomicPtr::new(preatt);
-    let att_atomic = AtomicPtr::new(att);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
             (0..NH).into_par_iter().for_each(|h| {
-                let out_raw = out_atomic.load(Ordering::SeqCst);
-                let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
-                let att_raw = att_atomic.load(Ordering::SeqCst);
-                let inp_raw = inp_atomic.load(Ordering::SeqCst);
+                let out = out;
+                let preatt = preatt;
+                let att = att;
+                let inp = inp;
 
-                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
-                let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                let query_t = inp.ptr.add(b * T * C3 + t * C3 + h * hs);
+                let preatt_bth = preatt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                let att_bth = att.ptr.add(b * NH * T * T + h * T * T + t * T);
 
                 let mut maxval = f32::NEG_INFINITY;
                 for t2 in 0..=t {
-                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
+                    let key_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C);
                     let mut val = 0.0;
                     for i in 0..hs {
                         val += *query_t.add(i) * *key_t2.add(i);
@@ -597,12 +550,12 @@ pub unsafe fn attention_forward_naive(
                     }
                 }
 
-                let out_bth = out_raw.add(b * T * C + t * C + h * hs);
+                let out_bth = out.ptr.add(b * T * C + t * C + h * hs);
                 for i in 0..hs {
                     *out_bth.add(i) = 0.0;
                 }
                 for t2 in 0..=t {
-                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
+                    let value_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
                     let att_btht2 = *att_bth.add(t2);
                     for i in 0..hs {
                         *out_bth.add(i) += att_btht2 * *value_t2.add(i);
@@ -626,10 +579,10 @@ pub unsafe fn attention_forward_naive(
 /// * `C` - Feature dimension.
 /// * `NH` - Number of attention heads.
 pub unsafe fn attention_forward(
-    out: *mut f32,
-    preatt: *mut f32,
-    att: *mut f32,
-    inp: *const f32,
+    out: SendPtr<f32>,
+    preatt: SendPtr<f32>,
+    att: SendPtr<f32>,
+    inp: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
@@ -638,11 +591,6 @@ pub unsafe fn attention_forward(
     let C3 = C * 3; // feature dimension scaled by 3
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
-
-    let out_atomic = AtomicPtr::new(out);
-    let preatt_atomic = AtomicPtr::new(preatt);
-    let att_atomic = AtomicPtr::new(att);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
 
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
@@ -654,10 +602,10 @@ pub unsafe fn attention_forward(
         .into_par_iter()
         .step_by(LOOP_UNROLL)
         .for_each(|obt| {
-            let out_raw = out_atomic.load(Ordering::SeqCst);
-            let preatt_raw = preatt_atomic.load(Ordering::SeqCst);
-            let att_raw = att_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
+            let out = out;
+            let preatt = preatt;
+            let att = att;
+            let inp = inp;
 
             for h in 0..NH {
                 for ibt in 0..LOOP_UNROLL {
@@ -665,13 +613,13 @@ pub unsafe fn attention_forward(
                     let t = bt % T;
                     let b = bt / T;
 
-                    let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
-                    let preatt_bth = preatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                    let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
+                    let query_t = inp.ptr.add(b * T * C3 + t * C3 + h * hs);
+                    let preatt_bth = preatt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                    let att_bth = att.ptr.add(b * NH * T * T + h * T * T + t * T);
 
                     let mut maxval = f32::NEG_INFINITY;
                     for t2 in 0..=t {
-                        let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C);
+                        let key_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C);
                         let mut val = 0.0;
                         for i in 0..hs {
                             val += *query_t.add(i) * *key_t2.add(i);
@@ -699,12 +647,12 @@ pub unsafe fn attention_forward(
                         }
                     }
 
-                    let out_bth = out_raw.add(b * T * C + t * C + h * hs);
+                    let out_bth = out.ptr.add(b * T * C + t * C + h * hs);
                     for i in 0..hs {
                         *out_bth.add(i) = 0.0;
                     }
                     for t2 in 0..=t {
-                        let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
+                        let value_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C);
                         let att_btht2 = *att_bth.add(t2);
                         for i in 0..hs {
                             *out_bth.add(i) += att_btht2 * *value_t2.add(i);
@@ -731,12 +679,12 @@ pub unsafe fn attention_forward(
 /// * `C` - Feature dimension.
 /// * `NH` - Number of attention heads.
 pub unsafe fn attention_backward_naive(
-    dinp: *mut f32,
-    dpreatt: *mut f32,
-    datt: *mut f32,
-    dout: *const f32,
-    inp: *const f32,
-    att: *const f32,
+    dinp: SendPtr<f32>,
+    dpreatt: SendPtr<f32>,
+    datt: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    att: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
@@ -746,34 +694,27 @@ pub unsafe fn attention_backward_naive(
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    let dinp_atomic = AtomicPtr::new(dinp);
-    let dpreatt_atomic = AtomicPtr::new(dpreatt);
-    let datt_atomic = AtomicPtr::new(datt);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let att_atomic = AtomicPtr::new(att as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
             (0..NH).into_par_iter().for_each(|h| {
-                let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-                let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
-                let datt_raw = datt_atomic.load(Ordering::SeqCst);
-                let dout_raw = dout_atomic.load(Ordering::SeqCst);
-                let inp_raw = inp_atomic.load(Ordering::SeqCst);
-                let att_raw = att_atomic.load(Ordering::SeqCst);
+                let dinp = dinp;
+                let dpreatt = dpreatt;
+                let datt = datt;
+                let dout = dout;
+                let inp = inp;
+                let att = att;
 
-                let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
-                let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
-                let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+                let att_bth = att.ptr.add(b * NH * T * T + h * T * T + t * T);
+                let datt_bth = datt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                let dpreatt_bth = dpreatt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                let dquery_t = dinp.ptr.add(b * T * C3 + t * C3 + h * hs);
+                let query_t = inp.ptr.add(b * T * C3 + t * C3 + h * hs);
 
                 // Backward pass 4: through the value accumulation
-                let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
+                let dout_bth = dout.ptr.add(b * T * C + t * C + h * hs);
                 for t2 in 0..=t {
-                    let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
-                    let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let value_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                    let dvalue_t2 = dinp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
                     for i in 0..hs {
                         *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
                         *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
@@ -791,8 +732,8 @@ pub unsafe fn attention_backward_naive(
 
                 // Backward pass 1: the query @ key matmul
                 for t2 in 0..=t {
-                    let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
-                    let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let key_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                    let dkey_t2 = dinp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
                     for i in 0..hs {
                         *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
                         *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
@@ -819,12 +760,12 @@ pub unsafe fn attention_backward_naive(
 /// * `C` - Feature dimension.
 /// * `NH` - Number of attention heads.
 pub unsafe fn attention_backward(
-    dinp: *mut f32,
-    dpreatt: *mut f32,
-    datt: *mut f32,
-    dout: *const f32,
-    inp: *const f32,
-    att: *const f32,
+    dinp: SendPtr<f32>,
+    dpreatt: SendPtr<f32>,
+    datt: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    att: SendPtr<f32>,
+    inp: SendPtr<f32>,
     B: usize,
     T: usize,
     C: usize,
@@ -833,13 +774,6 @@ pub unsafe fn attention_backward(
     let C3 = C * 3; // feature dimension scaled by 3
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
-
-    let dinp_atomic = AtomicPtr::new(dinp);
-    let dpreatt_atomic = AtomicPtr::new(dpreatt);
-    let datt_atomic = AtomicPtr::new(datt);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let att_atomic = AtomicPtr::new(att as *mut f32);
 
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
@@ -851,12 +785,12 @@ pub unsafe fn attention_backward(
         .into_par_iter()
         .step_by(LOOP_UNROLL)
         .for_each(|obt| {
-            let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-            let dpreatt_raw = dpreatt_atomic.load(Ordering::SeqCst);
-            let datt_raw = datt_atomic.load(Ordering::SeqCst);
-            let dout_raw = dout_atomic.load(Ordering::SeqCst);
-            let inp_raw = inp_atomic.load(Ordering::SeqCst);
-            let att_raw = att_atomic.load(Ordering::SeqCst);
+            let dinp = dinp;
+            let dpreatt = dpreatt;
+            let datt = datt;
+            let dout = dout;
+            let inp = inp;
+            let att = att;
 
             for ibt in 0..LOOP_UNROLL {
                 let bt = obt + ibt;
@@ -864,17 +798,17 @@ pub unsafe fn attention_backward(
                 let t = bt % T;
 
                 for h in 0..NH {
-                    let att_bth = att_raw.add(b * NH * T * T + h * T * T + t * T);
-                    let datt_bth = datt_raw.add(b * NH * T * T + h * T * T + t * T);
-                    let dpreatt_bth = dpreatt_raw.add(b * NH * T * T + h * T * T + t * T);
-                    let dquery_t = dinp_raw.add(b * T * C3 + t * C3 + h * hs);
-                    let query_t = inp_raw.add(b * T * C3 + t * C3 + h * hs);
+                    let att_bth = att.ptr.add(b * NH * T * T + h * T * T + t * T);
+                    let datt_bth = datt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                    let dpreatt_bth = dpreatt.ptr.add(b * NH * T * T + h * T * T + t * T);
+                    let dquery_t = dinp.ptr.add(b * T * C3 + t * C3 + h * hs);
+                    let query_t = inp.ptr.add(b * T * C3 + t * C3 + h * hs);
 
                     // Backward pass 4: through the value accumulation
-                    let dout_bth = dout_raw.add(b * T * C + t * C + h * hs);
+                    let dout_bth = dout.ptr.add(b * T * C + t * C + h * hs);
                     for t2 in 0..=t {
-                        let value_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
-                        let dvalue_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                        let value_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
+                        let dvalue_t2 = dinp.ptr.add(b * T * C3 + t2 * C3 + h * hs + 2 * C); // +C*2 because it's value
                         for i in 0..hs {
                             *datt_bth.add(t2) += *value_t2.add(i) * *dout_bth.add(i);
                             *dvalue_t2.add(i) += *att_bth.add(t2) * *dout_bth.add(i);
@@ -893,8 +827,8 @@ pub unsafe fn attention_backward(
 
                     // Backward pass 1: the query @ key matmul
                     for t2 in 0..=t {
-                        let key_t2 = inp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
-                        let dkey_t2 = dinp_raw.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                        let key_t2 = inp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
+                        let dkey_t2 = dinp.ptr.add(b * T * C3 + t2 * C3 + h * hs + C); // +C because it's key
                         for i in 0..hs {
                             *dquery_t.add(i) += *key_t2.add(i) * *dpreatt_bth.add(t2) * scale;
                             *dkey_t2.add(i) += *query_t.add(i) * *dpreatt_bth.add(t2) * scale;
@@ -912,20 +846,17 @@ pub unsafe fn attention_backward(
 /// * `out` - Output tensor to store the GELU results.
 /// * `inp` - Input tensor.
 /// * `N` - Number of elements.
-pub unsafe fn gelu_forward(out: *mut f32, inp: *const f32, N: usize) {
-    let out_atomic = AtomicPtr::new(out);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-
+pub unsafe fn gelu_forward(out: SendPtr<f32>, inp: SendPtr<f32>, N: usize) {
     (0..N).into_par_iter().for_each(|i| {
-        let out_raw = out_atomic.load(Ordering::SeqCst);
-        let inp_raw = inp_atomic.load(Ordering::SeqCst);
+        let out = out;
+        let inp = inp;
 
         // Load the input value
-        let x = *inp_raw.add(i);
+        let x = *inp.ptr.add(i);
         // Calculate the cubic term
         let cube = 0.044715 * x * x * x;
         // Apply the GeLU function
-        *out_raw.add(i) = 0.5 * x * (1.0 + ((2.0 / PI).sqrt() * (x + cube)).tanh());
+        *out.ptr.add(i) = 0.5 * x * (1.0 + ((2.0 / PI).sqrt() * (x + cube)).tanh());
     });
 }
 
@@ -937,21 +868,17 @@ pub unsafe fn gelu_forward(out: *mut f32, inp: *const f32, N: usize) {
 /// * `inp` - Input tensor.
 /// * `dout` - Gradient of the output tensor.
 /// * `N` - Number of elements.
-pub unsafe fn gelu_backward(dinp: *mut f32, inp: *const f32, dout: *const f32, N: usize) {
+pub unsafe fn gelu_backward(dinp: SendPtr<f32>, inp: SendPtr<f32>, dout: SendPtr<f32>, N: usize) {
     let gelu_scaling_factor = (2.0 / PI).sqrt();
 
-    let dinp_atomic = AtomicPtr::new(dinp);
-    let inp_atomic = AtomicPtr::new(inp as *mut f32);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-
     (0..N).into_par_iter().for_each(|i| {
-        let dinp_raw = dinp_atomic.load(Ordering::SeqCst);
-        let inp_raw = inp_atomic.load(Ordering::SeqCst);
-        let dout_raw = dout_atomic.load(Ordering::SeqCst);
+        let dinp = dinp;
+        let inp = inp;
+        let dout = dout;
 
         // Load the input value
-        let x = *inp_raw.add(i);
-        let dout_val = *dout_raw.add(i);
+        let x = *inp.ptr.add(i);
+        let dout_val = *dout.ptr.add(i);
 
         // Compute the cubic term
         let cube = 0.044715 * x * x * x;
@@ -969,7 +896,7 @@ pub unsafe fn gelu_backward(dinp: *mut f32, inp: *const f32, dout: *const f32, N
             + x * 0.5 * sech_out * gelu_scaling_factor * (1.0 + 3.0 * 0.044715 * x * x);
 
         // Accumulate the gradient into dinp
-        *dinp_raw.add(i) += local_grad * dout_val;
+        *dinp.ptr.add(i) += local_grad * dout_val;
     });
 }
 
@@ -981,18 +908,14 @@ pub unsafe fn gelu_backward(dinp: *mut f32, inp: *const f32, dout: *const f32, N
 /// * `inp1` - First input tensor.
 /// * `inp2` - Second input tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_forward(out: *mut f32, inp1: *const f32, inp2: *const f32, N: usize) {
-    let out_atomic = AtomicPtr::new(out);
-    let inp1_atomic = AtomicPtr::new(inp1 as *mut f32);
-    let inp2_atomic = AtomicPtr::new(inp2 as *mut f32);
-
+pub unsafe fn residual_forward(out: SendPtr<f32>, inp1: SendPtr<f32>, inp2: SendPtr<f32>, N: usize) {
     (0..N).into_par_iter().for_each(|i| {
-        let out_raw = out_atomic.load(Ordering::SeqCst);
-        let inp1_raw = inp1_atomic.load(Ordering::SeqCst);
-        let inp2_raw = inp2_atomic.load(Ordering::SeqCst);
+        let out = out;
+        let inp1 = inp1;
+        let inp2 = inp2;
 
         // Perform element-wise addition
-        *out_raw.add(i) = *inp1_raw.add(i) + *inp2_raw.add(i);
+        *out.ptr.add(i) = *inp1.ptr.add(i) + *inp2.ptr.add(i);
     });
 }
 
@@ -1004,19 +927,15 @@ pub unsafe fn residual_forward(out: *mut f32, inp1: *const f32, inp2: *const f32
 /// * `dinp2` - Gradient of the second input tensor.
 /// * `dout` - Gradient of the output tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_backward(dinp1: *mut f32, dinp2: *mut f32, dout: *const f32, N: usize) {
-    let dinp1_atomic = AtomicPtr::new(dinp1);
-    let dinp2_atomic = AtomicPtr::new(dinp2);
-    let dout_atomic = AtomicPtr::new(dout as *mut f32);
-
+pub unsafe fn residual_backward(dinp1: SendPtr<f32>, dinp2: SendPtr<f32>, dout: SendPtr<f32>, N: usize) {
     (0..N).into_par_iter().for_each(|i| {
-        let dinp1_raw = dinp1_atomic.load(Ordering::SeqCst);
-        let dinp2_raw = dinp2_atomic.load(Ordering::SeqCst);
-        let dout_raw = dout_atomic.load(Ordering::SeqCst);
+        let dinp1 = dinp1;
+        let dinp2 = dinp2;
+        let dout = dout;
 
         // Update the gradients for the inputs
-        *dinp1_raw.add(i) += *dout_raw.add(i);
-        *dinp2_raw.add(i) += *dout_raw.add(i);
+        *dinp1.ptr.add(i) += *dout.ptr.add(i);
+        *dinp2.ptr.add(i) += *dout.ptr.add(i);
     });
 }
 
@@ -1031,25 +950,22 @@ pub unsafe fn residual_backward(dinp1: *mut f32, dinp2: *mut f32, dout: *const f
 /// * `V` - Real vocabulary size.
 /// * `Vp` - Padded vocabulary size.
 pub unsafe fn softmax_forward(
-    probs: *mut f32,
-    logits: *const f32,
+    probs: SendPtr<f32>,
+    logits: SendPtr<f32>,
     B: usize,
     T: usize,
     V: usize,
     Vp: usize,
 ) {
-    let probs_atomic = AtomicPtr::new(probs);
-    let logits_atomic = AtomicPtr::new(logits as *mut f32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
             // Load the AtomicPtr values into raw pointers for the current scope
-            let probs_raw = probs_atomic.load(Ordering::SeqCst);
-            let logits_raw = logits_atomic.load(Ordering::SeqCst);
+            let probs = probs;
+            let logits = logits;
 
             // Calculate the base addresses
-            let logits_bt = logits_raw.add(b * T * Vp + t * Vp);
-            let probs_bt = probs_raw.add(b * T * Vp + t * Vp);
+            let logits_bt = logits.ptr.add(b * T * Vp + t * Vp);
+            let probs_bt = probs.ptr.add(b * T * Vp + t * Vp);
 
             // Calculate maxval for numerical stability
             let mut maxval = f32::NEG_INFINITY;
@@ -1092,31 +1008,27 @@ pub unsafe fn softmax_forward(
 /// * `T` - Sequence length.
 /// * `Vp` - Padded vocabulary size.
 pub unsafe fn crossentropy_forward(
-    losses: *mut f32,
-    probs: *const f32,
-    targets: *const i32,
+    losses: SendPtr<f32>,
+    probs: SendPtr<f32>,
+    targets: SendPtr<i32>,
     B: usize,
     T: usize,
     Vp: usize,
 ) {
-    let losses_atomic = AtomicPtr::new(losses);
-    let probs_atomic = AtomicPtr::new(probs as *mut f32);
-    let targets_atomic = AtomicPtr::new(targets as *mut i32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let losses_raw = losses_atomic.load(Ordering::SeqCst);
-            let probs_raw = probs_atomic.load(Ordering::SeqCst);
-            let targets_raw = targets_atomic.load(Ordering::SeqCst);
+            let losses = losses;
+            let probs = probs;
+            let targets = targets;
 
             // Calculate the base address for probs
-            let probs_bt = probs_raw.add(b * T * Vp + t * Vp);
+            let probs_bt = probs.ptr.add(b * T * Vp + t * Vp);
 
             // Get the target index
-            let ix = *targets_raw.add(b * T + t) as usize;
+            let ix = *targets.ptr.add(b * T + t) as usize;
 
             // Compute the cross-entropy loss and store it
-            *losses_raw.add(b * T + t) = -probs_bt.add(ix).read().ln();
+            *losses.ptr.add(b * T + t) = -probs_bt.add(ix).read().ln();
         });
     });
 }
@@ -1134,32 +1046,27 @@ pub unsafe fn crossentropy_forward(
 /// * `V` - Real vocabulary size.
 /// * `Vp` - Padded vocabulary size.
 pub unsafe fn crossentropy_softmax_backward(
-    dlogits: *mut f32,
-    dlosses: *const f32,
-    probs: *const f32,
-    targets: *const i32,
+    dlogits: SendPtr<f32>,
+    dlosses: SendPtr<f32>,
+    probs: SendPtr<f32>,
+    targets: SendPtr<i32>,
     B: usize,
     T: usize,
     V: usize,
     Vp: usize,
 ) {
-    let dlogits_atomic = AtomicPtr::new(dlogits);
-    let dlosses_atomic = AtomicPtr::new(dlosses as *mut f32);
-    let probs_atomic = AtomicPtr::new(probs as *mut f32);
-    let targets_atomic = AtomicPtr::new(targets as *mut i32);
-
     (0..B).into_par_iter().for_each(|b| {
         (0..T).into_par_iter().for_each(|t| {
-            let dlogits_raw = dlogits_atomic.load(Ordering::SeqCst);
-            let dlosses_raw = dlosses_atomic.load(Ordering::SeqCst);
-            let probs_raw = probs_atomic.load(Ordering::SeqCst);
-            let targets_raw = targets_atomic.load(Ordering::SeqCst);
+            let dlogits = dlogits;
+            let dlosses = dlosses;
+            let probs = probs;
+            let targets = targets;
 
             // Calculate the base addresses
-            let dlogits_bt = dlogits_raw.add(b * T * Vp + t * Vp);
-            let probs_bt = probs_raw.add(b * T * Vp + t * Vp);
-            let dloss = *dlosses_raw.add(b * T + t);
-            let ix = *targets_raw.add(b * T + t) as usize;
+            let dlogits_bt = dlogits.ptr.add(b * T * Vp + t * Vp);
+            let probs_bt = probs.ptr.add(b * T * Vp + t * Vp);
+            let dloss = *dlosses.ptr.add(b * T + t);
+            let ix = *targets.ptr.add(b * T + t) as usize;
 
             // Loop only to V, leaving padded dimensions untouched
             for i in 0..V {

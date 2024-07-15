@@ -3,15 +3,17 @@
 pub mod dataloader;
 pub mod gpt2;
 pub mod tokenizer;
+pub mod send_ptr;
 
-use std::alloc::{self, alloc, Layout};
+use std::alloc::{self, Layout};
 use std::io::{self, Write};
 use std::path::Path;
-use std::ptr;
+use std::ptr::null_mut;
 use std::time::Instant;
 
 use dataloader::DataLoader;
 use gpt2::*;
+use send_ptr::SendPtr;
 use tokenizer::*;
 
 const BATCH_SIZE: usize = 4;
@@ -120,7 +122,7 @@ pub fn main() {
         // Memory for generating samples
         let mut rng_state: u64 = 1337;
         let gen_tokens_layout = Layout::array::<i32>(B * T).expect("Failed to create layout");
-        let gen_tokens = alloc(gen_tokens_layout) as *mut i32;
+        let gen_tokens = SendPtr::new(alloc::alloc(gen_tokens_layout) as *mut i32);
         let genT = 64;
 
         // Training loop
@@ -141,18 +143,18 @@ pub fn main() {
             // Generate text periodically
             if step > 0 && step % 20 == 0 {
                 for i in 0..B * T {
-                    *gen_tokens.add(i) = 50256;
+                    *gen_tokens.ptr.add(i) = 50256;
                 }
                 println!("generating:\n---");
                 for t in 1..genT {
-                    model.forward(gen_tokens, ptr::null(), B, T);
+                    model.forward(gen_tokens, SendPtr::new(null_mut()), B, T);
                     let probs = model
                         .acts
                         .probs
-                        .add((t - 1) * model.config.padded_vocab_size);
+                        .ptr.add((t - 1) * model.config.padded_vocab_size);
                     let coin = random_f32(&mut rng_state);
                     let next_token = sample_mult(probs, model.config.vocab_size, coin) as u32;
-                    *gen_tokens.add(t) = next_token as i32;
+                    *gen_tokens.ptr.add(t) = next_token as i32;
                     if tokenizer.init_ok {
                         let token_str = tokenizer.decode(next_token);
                         safe_print(token_str);
@@ -185,6 +187,6 @@ pub fn main() {
         val_loader.free();
         tokenizer.free();
         model.free();
-        alloc::dealloc(gen_tokens as *mut u8, gen_tokens_layout);
+        alloc::dealloc(gen_tokens.ptr as *mut u8, gen_tokens_layout);
     }
 }
