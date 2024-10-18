@@ -182,12 +182,5 @@ pub fn main() {
                 duration.as_secs_f64() * 1000.0
             ).unwrap();
         }
-
-        // Free resources
-        // train_loader.free();
-        // val_loader.free();
-        // tokenizer.free();
-        // model.free();
-        // alloc::dealloc(gen_tokens.ptr as *mut u8, gen_tokens_layout);
     }
 }
