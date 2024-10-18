@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::io::{self, Write};
 
 pub struct Tokenizer {
     vocab_size: u32,
@@ -121,7 +122,7 @@ pub unsafe fn safe_print(piece: &str) {
     if !(bytes[0].is_ascii_graphic() || bytes[0].is_ascii_whitespace()) {
         return; // weird byte, don't print it
     }
-
+    let mut lock = io::stdout().lock();
     // Print the string if it is valid
-    print!("{}", piece);
+    write!(lock, "{}", piece).unwrap();
 }
