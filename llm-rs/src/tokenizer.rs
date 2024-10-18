@@ -91,8 +91,8 @@ impl Tokenizer {
     pub fn decode(&mut self, token_id: u32) -> &str {
         if !self.init_ok {
             ""
-        } else if token_id < self.vocab_size {
-            &self.token_table[token_id as usize]
+        } else if let Some(value) = self.token_table.get(token_id as usize) {
+            value
         } else {
             println!("invalid token id {}!", token_id);
             ""

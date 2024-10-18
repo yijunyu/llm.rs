@@ -124,6 +124,7 @@ pub fn main() {
         // Memory for generating samples
         let mut rng_state: u64 = 1337;
         let gen_tokens_layout = Layout::array::<i32>(B * T).expect("Failed to create layout");
+        // let gen_tokens_layout = i32[50256; B * T];
         let gen_tokens = SendPtr::new(alloc::alloc(gen_tokens_layout) as *mut i32);
         let genT = 64;
 
