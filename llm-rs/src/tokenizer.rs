@@ -116,14 +116,10 @@ impl Tokenizer {
 pub unsafe fn safe_print(piece: &str) {
     if piece.is_empty() {
         return;
-    }
-
+    } 
     let bytes = piece.as_bytes();
-    if bytes.len() == 1 {
-        let byte_val = bytes[0];
-        if !(byte_val.is_ascii_graphic() || byte_val.is_ascii_whitespace()) {
-            return; // weird byte, don't print it
-        }
+    if !(bytes[0].is_ascii_graphic() || bytes[0].is_ascii_whitespace()) {
+        return; // weird byte, don't print it
     }
 
     // Print the string if it is valid
