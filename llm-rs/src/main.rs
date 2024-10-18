@@ -83,6 +83,8 @@ fn sample_mult(probabilities: *const f32, n: usize, coin: f32) -> usize {
 // ----------------------------------------------------------------------------
 
 pub fn main() {
+    let mut lock = io::stdout().lock();
+
     // Initialize the GPT-2 model from a checkpoint
     let checkpoint_path = Path::new("gpt2_124M.bin");
     let mut model = GPT2::new(checkpoint_path);
@@ -110,8 +112,8 @@ pub fn main() {
     unsafe {
         let mut train_loader = DataLoader::new(train_tokens, B, T);
         let mut val_loader = DataLoader::new(val_tokens, B, T);
-        println!("train dataset num_batches: {}", train_loader.num_batches);
-        println!("val dataset num_batches: {}", val_loader.num_batches);
+        writeln!(lock, "train dataset num_batches: {}", train_loader.num_batches).unwrap();
+        writeln!(lock, "val dataset num_batches: {}", val_loader.num_batches).unwrap();
 
         let val_num_batches = 5;
 
@@ -137,7 +139,7 @@ pub fn main() {
                     val_loss += model.mean_loss;
                 }
                 val_loss /= val_num_batches as f32;
-                println!("val loss {}", val_loss);
+                writeln!(lock, "val loss {}", val_loss).unwrap();
             }
 
             // Generate text periodically
@@ -145,7 +147,7 @@ pub fn main() {
                 for i in 0..B * T {
                     *gen_tokens.ptr.add(i) = 50256;
                 }
-                println!("generating:\n---");
+                writeln!(lock, "generating:\n---").unwrap();
                 for t in 1..genT {
                     model.forward(gen_tokens, SendPtr::new(null_mut()), B, T);
                     let probs = model
@@ -159,11 +161,11 @@ pub fn main() {
                         let token_str = tokenizer.decode(next_token);
                         safe_print(token_str);
                     } else {
-                        print!("{} ", next_token);
+                        write!(lock, "{} ", next_token).unwrap();
                     }
-                    io::stdout().flush().unwrap();
+                    // io::stdout().flush().unwrap();
                 }
-                println!("\n---");
+                writeln!(lock, "\n---").unwrap();
             }
 
             // Training step
@@ -174,19 +176,18 @@ pub fn main() {
             model.backward();
             model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
             let duration = start.elapsed();
-            println!(
-                "step {}: train loss {:.6} (took {:.2} ms)",
+            writeln!(lock, "step {}: train loss {:.6} (took {:.2} ms)",
                 step,
                 model.mean_loss,
                 duration.as_secs_f64() * 1000.0
-            );
+            ).unwrap();
         }
 
         // Free resources
-        train_loader.free();
-        val_loader.free();
-        tokenizer.free();
-        model.free();
-        alloc::dealloc(gen_tokens.ptr as *mut u8, gen_tokens_layout);
+        // train_loader.free();
+        // val_loader.free();
+        // tokenizer.free();
+        // model.free();
+        // alloc::dealloc(gen_tokens.ptr as *mut u8, gen_tokens_layout);
     }
 }
