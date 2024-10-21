@@ -106,12 +106,9 @@ pub fn main() {
         tiny_stories_val
     };
 
-    let B = BATCH_SIZE;
-    let T = SEQ_LENGTH;
-
     unsafe {
-        let mut train_loader = DataLoader::new(train_tokens, B, T);
-        let mut val_loader = DataLoader::new(val_tokens, B, T);
+        let mut train_loader = DataLoader::new(train_tokens, BATCH_SIZE, SEQ_LENGTH);
+        let mut val_loader = DataLoader::new(val_tokens, BATCH_SIZE, SEQ_LENGTH);
         writeln!(lock, "train dataset num_batches: {}", train_loader.num_batches).unwrap();
         writeln!(lock, "val dataset num_batches: {}", val_loader.num_batches).unwrap();
 
@@ -123,8 +120,7 @@ pub fn main() {
 
         // Memory for generating samples
         let mut rng_state: u64 = 1337;
-        let gen_tokens_layout = Layout::array::<i32>(B * T).expect("Failed to create layout");
-        // let gen_tokens_layout = i32[50256; B * T];
+        let gen_tokens_layout = Layout::array::<i32>(BATCH_SIZE * SEQ_LENGTH).expect("Failed to create layout");
         let gen_tokens = SendPtr::new(alloc::alloc(gen_tokens_layout) as *mut i32);
         let genT = 64;
 
@@ -136,7 +132,7 @@ pub fn main() {
                 val_loader.reset();
                 for _ in 0..val_num_batches {
                     val_loader.next_batch();
-                    model.forward(val_loader.inputs, val_loader.targets, B, T);
+                    model.forward(val_loader.inputs, val_loader.targets, BATCH_SIZE, SEQ_LENGTH);
                     val_loss += model.mean_loss;
                 }
                 val_loss /= val_num_batches as f32;
@@ -145,12 +141,12 @@ pub fn main() {
 
             // Generate text periodically
             if step > 0 && step % 20 == 0 {
-                for i in 0..B * T {
+                for i in 0..BATCH_SIZE * SEQ_LENGTH {
                     *gen_tokens.ptr.add(i) = 50256;
                 }
                 writeln!(lock, "generating:\n---").unwrap();
                 for t in 1..genT {
-                    model.forward(gen_tokens, SendPtr::new(null_mut()), B, T);
+                    model.forward(gen_tokens, SendPtr::new(null_mut()), BATCH_SIZE, SEQ_LENGTH);
                     let probs = model
                         .acts
                         .probs
@@ -172,7 +168,7 @@ pub fn main() {
             // Training step
             let start = Instant::now();
             train_loader.next_batch();
-            model.forward(train_loader.inputs, train_loader.targets, B, T);
+            model.forward(train_loader.inputs, train_loader.targets, BATCH_SIZE, SEQ_LENGTH);
             model.zero_grad();
             model.backward();
             model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
