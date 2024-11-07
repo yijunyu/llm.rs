@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
 Downloads and tokenizes the TinyShakespeare dataset.
 - The download is from Github.
