@@ -304,6 +304,42 @@ pub unsafe fn matmul_forward_naive(
     });
 }
 
+pub unsafe fn matmul_forward_fast(
+    out: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    bias: SendPtr<f32>,
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
+) {
+    matrixmultiply::sgemm(
+        B * T,
+        C,
+        OC,
+        1.0,
+        inp.ptr,
+        C as isize,
+        1,
+        weight.ptr,
+        1,
+        C as isize,
+        0.0,
+        out.ptr,
+        OC as isize,
+        1,
+    );
+
+    if !bias.ptr.is_null() {
+        for bt in 0..B * T {
+            for o in 0..OC {
+                *out.ptr.add(bt * OC + o) += *bias.ptr.add(o);
+            }
+        }
+    }
+}
+
 /// Computes the forward pass for matrix multiplication, producing the output tensor.
 ///
 /// # Arguments
@@ -331,6 +367,7 @@ pub unsafe fn matmul_forward(
     C: usize,
     OC: usize,
 ) {
+    return matmul_forward_fast(out, inp, weight, bias, B, T, C, OC);
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
         matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
@@ -377,6 +414,61 @@ pub unsafe fn matmul_forward(
         });
 }
 
+pub unsafe fn matmul_backward_fast(
+    dinp: SendPtr<f32>,
+    dweight: SendPtr<f32>,
+    dbias: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
+) {
+    matrixmultiply::sgemm(
+        B * T,
+        OC,
+        C,
+        1.0,
+        dout.ptr,
+        OC as isize,
+        1,
+        weight.ptr,
+        C as isize,
+        1,
+        1.0,
+        dinp.ptr,
+        C as isize,
+        1,
+    );
+
+    matrixmultiply::sgemm(
+        OC,
+        B * T,
+        C,
+        1.0,
+        dout.ptr,
+        1,
+        OC as isize,
+        inp.ptr,
+        C as isize,
+        1,
+        1.0,
+        dweight.ptr,
+        C as isize,
+        1,
+    );
+
+    if !dbias.ptr.is_null() {
+        for bt in 0..B * T {
+            for o in 0..OC {
+                *dbias.ptr.add(o) += *dout.ptr.add(bt * OC + o);
+            }
+        }
+    }
+}
+
 /// Computes the backward pass for matrix multiplication, updating gradients for inputs,
 /// weights, and biases.
 ///
@@ -409,6 +501,7 @@ pub unsafe fn matmul_backward(
     C: usize,
     OC: usize,
 ) {
+    return matmul_backward_fast(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);
     // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
     if (B * T) % LOOP_UNROLL != 0 {
         // Parallelize over B and T for input gradient computation
@@ -908,7 +1001,12 @@ pub unsafe fn gelu_backward(dinp: SendPtr<f32>, inp: SendPtr<f32>, dout: SendPtr
 /// * `inp1` - First input tensor.
 /// * `inp2` - Second input tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_forward(out: SendPtr<f32>, inp1: SendPtr<f32>, inp2: SendPtr<f32>, N: usize) {
+pub unsafe fn residual_forward(
+    out: SendPtr<f32>,
+    inp1: SendPtr<f32>,
+    inp2: SendPtr<f32>,
+    N: usize,
+) {
     (0..N).into_par_iter().for_each(|i| {
         let out = out;
         let inp1 = inp1;
@@ -927,7 +1025,12 @@ pub unsafe fn residual_forward(out: SendPtr<f32>, inp1: SendPtr<f32>, inp2: Send
 /// * `dinp2` - Gradient of the second input tensor.
 /// * `dout` - Gradient of the output tensor.
 /// * `N` - Number of elements.
-pub unsafe fn residual_backward(dinp1: SendPtr<f32>, dinp2: SendPtr<f32>, dout: SendPtr<f32>, N: usize) {
+pub unsafe fn residual_backward(
+    dinp1: SendPtr<f32>,
+    dinp2: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    N: usize,
+) {
     (0..N).into_par_iter().for_each(|i| {
         let dinp1 = dinp1;
         let dinp2 = dinp2;
