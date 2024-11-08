@@ -29,7 +29,7 @@ Currently, the project is undergoing manual updates to find performance improvem
 Currently this implementation is still slower than the C version based on the following benchmarks:
 |                               | C      | Rust   |C++     | Mojo   |
 |-------------------------------|--------|--------|--------|--------|
-| Intel Core i7-9700 8-core     | 2.447s | 2.530s |        |        |
+| Intel Core i7-9700 8-core     | 2.447s | 1.251s |        |        |
 | Intel Xeon E5-2690 v3 12-core | 2.110s | 2.439s | 1.037s | 6.190s |
 
 ![LLM Training Results](images/llm_training_esults.png)

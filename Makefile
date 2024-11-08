@@ -1,7 +1,5 @@
 .PHONY:	setup install preprocess train run
 
-all: train
-
 install:
 	pip install -r requirements.txt
 

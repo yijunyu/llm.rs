@@ -248,7 +248,7 @@ pub unsafe fn layernorm_backward(
     });
 }
 
-/// Naive implementation of the forward pass for matrix multiplication, producing the output tensor.
+/// Computes the forward pass for matrix multiplication, producing the output tensor.
 ///
 /// # Arguments
 ///
@@ -263,48 +263,9 @@ pub unsafe fn layernorm_backward(
 ///
 /// # Note
 ///
-/// This is the most naive implementation of matrix multiplication that serves as an algorithmic reference, and as a fallback for unfriendly input shapes inside matmul_forward().
-pub unsafe fn matmul_forward_naive(
-    out: SendPtr<f32>,
-    inp: SendPtr<f32>,
-    weight: SendPtr<f32>,
-    bias: SendPtr<f32>,
-    B: usize,
-    T: usize,
-    C: usize,
-    OC: usize,
-) {
-    // Create a parallel iterator over the batch dimension
-    (0..B).into_par_iter().for_each(|b| {
-        // Create a parallel iterator over the sequence length
-        (0..T).into_par_iter().for_each(|t| {
-            // Load the AtomicPtr values into raw pointers for the current scope
-            let out = out;
-            let inp = inp;
-            let weight = weight;
-            let bias = bias;
-
-            let bt = b * T + t;
-            // Iterate over the output channels
-            for o in 0..OC {
-                // Initialize the output value with the bias if provided, otherwise 0.0
-                let mut val = if !bias.ptr.is_null() {
-                    *bias.ptr.add(o)
-                } else {
-                    0.0f32
-                };
-                // Perform the dot product
-                for i in 0..C {
-                    val += *inp.ptr.add(bt * C + i) * *weight.ptr.add(o * C + i);
-                }
-                // Store the result
-                *out.ptr.add(bt * OC + o) = val;
-            }
-        });
-    });
-}
-
-pub unsafe fn matmul_forward_fast(
+/// Most of the running time is spent here and in matmul_backward, therefore, the implementation below is very mildly optimized.
+/// This function is otherwise identical to that of matmul_forward_naive().
+pub unsafe fn matmul_forward(
     out: SendPtr<f32>,
     inp: SendPtr<f32>,
     weight: SendPtr<f32>,
@@ -340,81 +301,27 @@ pub unsafe fn matmul_forward_fast(
     }
 }
 
-/// Computes the forward pass for matrix multiplication, producing the output tensor.
+/// Computes the backward pass for matrix multiplication, updating gradients for inputs,
+/// weights, and biases.
 ///
 /// # Arguments
 ///
-/// * `out` - Output tensor for the matrix multiplication result.
+/// * `dinp` - Gradient of the input tensor.
+/// * `dweight` - Gradient of the weight matrix.
+/// * `dbias` - Gradient of the bias vector.
+/// * `dout` - Gradient of the output tensor.
 /// * `inp` - Input tensor.
 /// * `weight` - Weight matrix.
-/// * `bias` - Bias vector.
 /// * `B` - Batch size.
 /// * `T` - Sequence length.
 /// * `C` - Input feature dimension.
-/// * `OC` - Output feature dimension or output channels.
+/// * `OC` - Output feature dimension.
 ///
 /// # Note
 ///
-/// Most of the running time is spent here and in matmul_backward, therefore, the implementation below is very mildly optimized.
-/// This function is otherwise identical to that of matmul_forward_naive().
-pub unsafe fn matmul_forward(
-    out: SendPtr<f32>,
-    inp: SendPtr<f32>,
-    weight: SendPtr<f32>,
-    bias: SendPtr<f32>,
-    B: usize,
-    T: usize,
-    C: usize,
-    OC: usize,
-) {
-    return matmul_forward_fast(out, inp, weight, bias, B, T, C, OC);
-    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
-    if (B * T) % LOOP_UNROLL != 0 {
-        matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
-        return;
-    }
-
-    // Parallelize the outer loop using Rayon
-    (0..B * T)
-        .into_par_iter()
-        .step_by(LOOP_UNROLL)
-        .for_each(|obt| {
-            // Load the AtomicPtr values into raw pointers for the current scope
-            let out = out;
-            let inp = inp;
-            let weight = weight;
-            let bias = bias;
-
-            for o in 0..OC {
-                // Initialize the result array with bias if present
-                let mut result = [0.0f32; LOOP_UNROLL];
-                for ibt in 0..LOOP_UNROLL {
-                    result[ibt] = if !bias.ptr.is_null() {
-                        *bias.ptr.add(o)
-                    } else {
-                        0.0f32
-                    };
-                }
-
-                // Cache the weight value and compute dot products
-                for i in 0..C {
-                    let w = *weight.ptr.add(i + o * C);
-                    for ibt in 0..LOOP_UNROLL {
-                        let bt = obt + ibt;
-                        result[ibt] += *inp.ptr.add(bt * C + i) * w;
-                    }
-                }
-
-                // Write results back to the output matrix
-                for ibt in 0..LOOP_UNROLL {
-                    let bt = obt + ibt;
-                    *out.ptr.add(bt * OC + o) = result[ibt];
-                }
-            }
-        });
-}
-
-pub unsafe fn matmul_backward_fast(
+/// Most of the running time is spent here and in matmul_forward.
+/// This backward could be done in a single "round" of loops but that doesn't afford an efficient parallelization strategy.
+pub unsafe fn matmul_backward(
     dinp: SendPtr<f32>,
     dweight: SendPtr<f32>,
     dbias: SendPtr<f32>,
@@ -467,112 +374,6 @@ pub unsafe fn matmul_backward_fast(
             }
         }
     }
-}
-
-/// Computes the backward pass for matrix multiplication, updating gradients for inputs,
-/// weights, and biases.
-///
-/// # Arguments
-///
-/// * `dinp` - Gradient of the input tensor.
-/// * `dweight` - Gradient of the weight matrix.
-/// * `dbias` - Gradient of the bias vector.
-/// * `dout` - Gradient of the output tensor.
-/// * `inp` - Input tensor.
-/// * `weight` - Weight matrix.
-/// * `B` - Batch size.
-/// * `T` - Sequence length.
-/// * `C` - Input feature dimension.
-/// * `OC` - Output feature dimension.
-///
-/// # Note
-///
-/// Most of the running time is spent here and in matmul_forward.
-/// This backward could be done in a single "round" of loops but that doesn't afford an efficient parallelization strategy.
-pub unsafe fn matmul_backward(
-    dinp: SendPtr<f32>,
-    dweight: SendPtr<f32>,
-    dbias: SendPtr<f32>,
-    dout: SendPtr<f32>,
-    inp: SendPtr<f32>,
-    weight: SendPtr<f32>,
-    B: usize,
-    T: usize,
-    C: usize,
-    OC: usize,
-) {
-    return matmul_backward_fast(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);
-    // Fallback to naive implementation if B * T is not a multiple of LOOP_UNROLL
-    if (B * T) % LOOP_UNROLL != 0 {
-        // Parallelize over B and T for input gradient computation
-        (0..B).into_par_iter().for_each(|b| {
-            (0..T).into_par_iter().for_each(|t| {
-                let dout = dout;
-                let dinp = dinp;
-                let weight = weight;
-
-                let dout_bt = dout.ptr.add(b * T * OC + t * OC);
-                let dinp_bt = dinp.ptr.add(b * T * C + t * C);
-
-                for o in 0..OC {
-                    let wrow = weight.ptr.add(o * C);
-                    let d = *dout_bt.add(o);
-                    for i in 0..C {
-                        *dinp_bt.add(i) += *wrow.add(i) * d;
-                    }
-                }
-            });
-        });
-    } else {
-        // Parallelize over B and T for input gradient computation
-        (0..B * T)
-            .into_par_iter()
-            .step_by(LOOP_UNROLL)
-            .for_each(|obt| {
-                let dout = dout;
-                let dinp = dinp;
-                let weight = weight;
-
-                for o in 0..OC {
-                    for ibt in 0..LOOP_UNROLL {
-                        let bt = obt + ibt;
-                        let dout_bt = dout.ptr.add(bt * OC + o);
-                        let dinp_bt = dinp.ptr.add(bt * C);
-
-                        let wrow = weight.ptr.add(o * C);
-                        let d = *dout_bt;
-
-                        for i in 0..C {
-                            *dinp_bt.add(i) += *wrow.add(i) * d;
-                        }
-                    }
-                }
-            });
-    }
-
-    // Parallelize over output channels for weight and bias gradient computation
-    (0..OC).into_par_iter().for_each(|o| {
-        for b in 0..B {
-            for t in 0..T {
-                let dout = dout;
-                let inp = inp;
-                let dweight = dweight;
-                let dbias = dbias;
-
-                let dout_bt = dout.ptr.add(b * T * OC + t * OC);
-                let inp_bt = inp.ptr.add(b * T * C + t * C);
-                let dwrow = dweight.ptr.add(o * C);
-
-                let d = *dout_bt.add(o);
-                if !dbias.ptr.is_null() {
-                    *dbias.ptr.add(o) += d;
-                }
-                for i in 0..C {
-                    *dwrow.add(i) += *inp_bt.add(i) * d;
-                }
-            }
-        }
-    });
 }
 
 /// Naive implementation of the forward pass for multi-head attention, generating output and storing attention scores.
