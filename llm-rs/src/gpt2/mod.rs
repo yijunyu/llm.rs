@@ -2,19 +2,15 @@ mod activation_tensors;
 mod parameter_tensors;
 mod passes;
 
-use core::slice;
-use std::alloc::{self, Layout};
+use core::{panic, slice};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::mem;
-use std::ptr::{self, null_mut};
 
 use activation_tensors::*;
 use parameter_tensors::*;
 use passes::*;
-
-use crate::send_ptr::SendPtr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GPT2Config {
@@ -66,7 +62,7 @@ pub struct GPT2 {
     pub param_sizes: [usize; NUM_PARAMETER_TENSORS],
 
     /// Memory block containing all model parameters.
-    pub params_memory: SendPtr<f32>,
+    pub params_memory: Vec<f32>,
 
     /// Total number of parameters.
     pub num_parameters: usize,
@@ -75,13 +71,13 @@ pub struct GPT2 {
     pub grads: ParameterTensors,
 
     /// Memory block containing all gradients of the model parameters.
-    pub grads_memory: SendPtr<f32>,
+    pub grads_memory: Vec<f32>,
 
     /// Buffer for the AdamW optimizer.
-    pub m_memory: SendPtr<f32>,
+    pub m_memory: Vec<f32>,
 
     /// Buffer for the AdamW optimizer.
-    pub v_memory: SendPtr<f32>,
+    pub v_memory: Vec<f32>,
 
     /// The activations of the model.
     pub acts: ActivationTensors,
@@ -90,7 +86,7 @@ pub struct GPT2 {
     pub act_sizes: [usize; NUM_ACTIVATION_TENSORS],
 
     /// Memory block containing all activations.
-    pub acts_memory: SendPtr<f32>,
+    pub acts_memory: Vec<f32>,
 
     /// Total number of activations.
     pub num_activations: usize,
@@ -99,7 +95,7 @@ pub struct GPT2 {
     pub grads_acts: ActivationTensors,
 
     /// Memory block containing all gradients of the activations.
-    pub grads_acts_memory: SendPtr<f32>,
+    pub grads_acts_memory: Vec<f32>,
 
     /// The batch size (B) of the current forward pass
     pub batch_size: usize,
@@ -108,10 +104,10 @@ pub struct GPT2 {
     pub seq_len: usize,
 
     /// The input tokens for the current forward pass
-    pub inputs: SendPtr<i32>,
+    pub inputs: Vec<i32>,
 
     /// The target tokens for the current forward pass
-    pub targets: SendPtr<i32>,
+    pub targets: Vec<i32>,
 
     /// After a forward pass with targets, will be populated with the mean loss
     pub mean_loss: f32,
@@ -132,20 +128,20 @@ impl GPT2 {
             config: GPT2Config::new(),
             params: ParameterTensors::new(),
             param_sizes: [0; NUM_PARAMETER_TENSORS],
-            params_memory: SendPtr::new(null_mut()),
+            params_memory: Vec::new(),
             num_parameters: 0,
             grads: ParameterTensors::new(),
-            grads_memory: SendPtr::new(null_mut()),
-            m_memory: SendPtr::new(null_mut()),
-            v_memory: SendPtr::new(null_mut()),
+            grads_memory: Vec::new(),
+            m_memory: Vec::new(),
+            v_memory: Vec::new(),
             acts: ActivationTensors::new(),
             act_sizes: [0; NUM_ACTIVATION_TENSORS],
-            acts_memory: SendPtr::new(null_mut()),
+            acts_memory: Vec::new(),
             num_activations: 0,
             grads_acts: ActivationTensors::new(),
-            grads_acts_memory: SendPtr::new(null_mut()),
-            inputs: SendPtr::new(null_mut()),
-            targets: SendPtr::new(null_mut()),
+            grads_acts_memory: Vec::new(),
+            inputs: Vec::new(),
+            targets: Vec::new(),
             batch_size: 0,
             seq_len: 0,
             mean_loss: -1.0,
@@ -182,6 +178,7 @@ impl GPT2 {
         let NH = model_header[5] as usize;
         let C = model_header[6] as usize;
         let Vp = model_header[7] as usize;
+
         model.config = GPT2Config {
             max_seq_len: maxT,
             vocab_size: V,
@@ -190,6 +187,7 @@ impl GPT2 {
             num_heads: NH,
             channels: C,
         };
+
         println!("[GPT-2]");
         println!("max_seq_len: {}", maxT);
         println!("vocab_size: {}", V);
@@ -222,16 +220,45 @@ impl GPT2 {
         model.num_parameters = num_parameters;
 
         // Read in all the parameters from file
-        unsafe {
-            model.params_memory = model.params.alloc_and_point_parameters(&model.param_sizes);
-            model_file
-                .read_exact(slice::from_raw_parts_mut(
-                    model.params_memory.ptr as *mut u8,
-                    num_parameters * mem::size_of::<f32>(),
-                ))
-                .expect("Failed to read parameters");
+        model.params_memory = model.params.alloc_and_point_parameters(&model.param_sizes);
+
+        // Calculate the total number of bytes needed
+        let num_bytes = model.params_memory.len() * mem::size_of::<f32>();
+
+        // Temporary byte buffer for reading the raw data from file
+        let mut byte_buffer: Vec<u8> = vec![0; num_bytes];
+        
+        // Read the exact number of bytes from the file
+        model_file.read_exact(&mut byte_buffer).unwrap();
+
+        // Convert bytes to f32s and fill params_memory
+        for (i, chunk) in byte_buffer.chunks_exact(4).enumerate() {
+            model.params_memory[i] = f32::from_ne_bytes(chunk.try_into().unwrap());
         }
 
+        let mut offset = 0;
+        let mut assign_slice = |vec_field: &mut Vec<f32>, size: usize| {
+            *vec_field = model.params_memory[offset..offset + size].to_vec();
+            offset += size;
+        };
+
+        assign_slice(&mut model.params.wte, model.param_sizes[0]);
+        assign_slice(&mut model.params.wpe, model.param_sizes[1]);
+        assign_slice(&mut model.params.ln1w, model.param_sizes[2]);
+        assign_slice(&mut model.params.ln1b, model.param_sizes[3]);
+        assign_slice(&mut model.params.qkvw, model.param_sizes[4]);
+        assign_slice(&mut model.params.qkvb, model.param_sizes[5]);
+        assign_slice(&mut model.params.attprojw, model.param_sizes[6]);
+        assign_slice(&mut model.params.attprojb, model.param_sizes[7]);
+        assign_slice(&mut model.params.ln2w, model.param_sizes[8]);
+        assign_slice(&mut model.params.ln2b, model.param_sizes[9]);
+        assign_slice(&mut model.params.fcw, model.param_sizes[10]);
+        assign_slice(&mut model.params.fcb, model.param_sizes[11]);
+        assign_slice(&mut model.params.fcprojw, model.param_sizes[12]);
+        assign_slice(&mut model.params.fcprojb, model.param_sizes[13]);
+        assign_slice(&mut model.params.lnfw, model.param_sizes[14]);
+        assign_slice(&mut model.params.lnfb, model.param_sizes[15]);
+            
         model
     }
 
@@ -245,9 +272,15 @@ impl GPT2 {
     /// * `targets` - Target tensor containing token indices for loss calculation (optional).
     /// * `B` - Batch size.
     /// * `T` - Sequence length.
-    pub fn forward(&mut self, inputs: SendPtr<i32>, targets: SendPtr<i32>, B: usize, T: usize) {
+    pub fn forward(
+        &mut self, 
+        inputs: &[i32], 
+        targets: &[i32], 
+        B: usize, 
+        T: usize
+    ) {
         // Ensure the model was initialized or error out
-        if self.params_memory.ptr.is_null() {
+        if self.params_memory.is_empty() {
             panic!("Error: model was not initialized properly.");
         }
 
@@ -259,17 +292,15 @@ impl GPT2 {
         let C = self.config.channels;
 
         // Validate inputs, all indices must be in the range [0, V)
-        unsafe {
-            for i in 0..(B * T) {
-                assert!((*inputs.ptr.add(i) >= 0 && *inputs.ptr.add(i) < V as i32));
-                if !targets.ptr.is_null() {
-                    assert!((*targets.ptr.add(i) >= 0 && *targets.ptr.add(i) < V as i32));
-                }
+        for i in 0..(B * T) {
+            assert!((inputs[i] >= 0 && inputs[i] < V as i32));
+            if !targets.is_empty() {
+                assert!((targets[i] >= 0 && targets[i] < V as i32));
             }
         }
 
         // Allocate space for all the activations if needed (done here, lazily)
-        if self.acts_memory.ptr.is_null() {
+        if self.acts_memory.is_empty() {
             // Record the current B, T as well
             self.batch_size = B;
             self.seq_len = T;
@@ -303,14 +334,7 @@ impl GPT2 {
             println!("num_activations: {}", num_activations);
             self.num_activations = num_activations;
 
-            unsafe {
-                self.acts_memory = self.acts.alloc_and_point_activations(&self.act_sizes);
-
-                // Create memory for caching inputs and targets
-                let input_layout = Layout::array::<i32>(B * T).expect("Failed to create layout");
-                self.inputs.ptr = alloc::alloc(input_layout) as *mut i32;
-                self.targets.ptr = alloc::alloc(input_layout) as *mut i32; // might be unused if we never have targets but it's small
-            }
+            self.acts_memory = self.acts.alloc_and_point_activations(&self.act_sizes);
         } else {
             // Validate B, T is consistent with how we've allocated the memory before
             if B != self.batch_size || T != self.seq_len {
@@ -321,115 +345,84 @@ impl GPT2 {
             }
         }
 
-        // Cache the inputs/targets
-        unsafe {
-            ptr::copy_nonoverlapping(inputs.ptr, self.inputs.ptr, B * T);
-            if !targets.ptr.is_null() {
-                ptr::copy_nonoverlapping(targets.ptr, self.targets.ptr, B * T);
-            }
-        }
+        // Allocate space for caching inputs and targets as Vec<i32>
+        self.inputs = inputs.to_vec(); // Cache the inputs
+        self.targets = targets.to_vec(); // Cache the targets if provided
 
         // Forward pass
         let params = &self.params;
         let acts = &mut self.acts;
-        let mut residual: SendPtr<f32> = SendPtr::new(null_mut());
 
-        unsafe {
-            encoder_forward(acts.encoded, inputs, params.wte, params.wpe, B, T, C);
+        encoder_forward(&mut acts.encoded, &inputs, &params.wte, &params.wpe, T, C);
+        
+        for l in 0..L {
+            // Get the pointers of the weights for this layer
+            let l_ln1w = &params.ln1w[l * C..(l + 1) * C];
+            let l_ln1b = &params.ln1b[l * C..(l + 1) * C];
+            let l_qkvw = &params.qkvw[l * 3 * C * C..(l + 1) * 3 * C * C];
+            let l_qkvb = &params.qkvb[l * 3 * C..(l + 1) * 3 * C];
+            let l_attprojw = &params.attprojw[l * C * C..(l + 1) * C * C];
+            let l_attprojb = &params.attprojb[l * C..(l + 1) * C];
+            let l_ln2w = &params.ln2w[l * C..(l + 1) * C];
+            let l_ln2b = &params.ln2b[l * C..(l + 1) * C];
+            let l_fcw = &params.fcw[l * 4 * C * C..(l + 1) * 4 * C * C];
+            let l_fcb = &params.fcb[l * 4 * C..(l + 1) * 4 * C];
+            let l_fcprojw = &params.fcprojw[l * C * 4 * C..(l + 1) * C * 4 * C];
+            let l_fcprojb = &params.fcprojb[l * C..(l + 1) * C];
 
-            for l in 0..L {
-                residual.ptr = if l == 0 {
-                    acts.encoded.ptr
-                } else {
-                    acts.residual3.ptr.add((l - 1) * B * T * C)
-                };
+            // Get the pointers of the activations for this layer
+            let mut l_ln1 = &mut acts.ln1[l * B * T * C..(l + 1) * B * T * C];
+            let mut l_ln1_mean = &mut acts.ln1_mean[l * B * T..(l + 1) * B * T];
+            let mut l_ln1_rstd = &mut acts.ln1_rstd[l * B * T..(l + 1) * B * T];
+            let mut l_qkv = &mut acts.qkv[l * B * T * 3 * C..(l + 1) * B * T * 3 * C];
+            let mut l_atty = &mut acts.atty[l * B * T * C..(l + 1) * B * T * C];
+            let mut l_preatt = &mut acts.preatt[l * B * NH * T * T..(l + 1) * B * NH * T * T];
+            let mut l_att = &mut acts.att[l * B * NH * T * T..(l + 1) * B * NH * T * T];
+            let mut l_attproj = &mut acts.attproj[l * B * T * C..(l + 1) * B * T * C];
+            let mut l_residual2 = &mut acts.residual2[l * B * T * C..(l + 1) * B * T * C];
+            let mut l_ln2 = &mut acts.ln2[l * B * T * C..(l + 1) * B * T * C];
+            let mut l_ln2_mean = &mut acts.ln2_mean[l * B * T..(l + 1) * B * T];
+            let mut l_ln2_rstd = &mut acts.ln2_rstd[l * B * T..(l + 1) * B * T];
+            let mut l_fch = &mut acts.fch[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
+            let mut l_fch_gelu = &mut acts.fch_gelu[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
+            let mut l_fcproj = &mut acts.fcproj[l * B * T * C..(l + 1) * B * T * C];
 
-                // Get the pointers of the weights for this layer
-                let l_ln1w = SendPtr::new(params.ln1w.ptr.add(l * C));
-                let l_ln1b = SendPtr::new(params.ln1b.ptr.add(l * C));
-                let l_qkvw = SendPtr::new(params.qkvw.ptr.add(l * 3 * C * C));
-                let l_qkvb = SendPtr::new(params.qkvb.ptr.add(l * 3 * C));
-                let l_attprojw = SendPtr::new(params.attprojw.ptr.add(l * C * C));
-                let l_attprojb = SendPtr::new(params.attprojb.ptr.add(l * C));
-                let l_ln2w = SendPtr::new(params.ln2w.ptr.add(l * C));
-                let l_ln2b = SendPtr::new(params.ln2b.ptr.add(l * C));
-                let l_fcw = SendPtr::new(params.fcw.ptr.add(l * 4 * C * C));
-                let l_fcb = SendPtr::new(params.fcb.ptr.add(l * 4 * C));
-                let l_fcprojw = SendPtr::new(params.fcprojw.ptr.add(l * C * 4 * C));
-                let l_fcprojb = SendPtr::new(params.fcprojb.ptr.add(l * C));
+            let (left_residual, right_residual) = acts.residual3.split_at_mut(l * B * T * C);
+            let mut l_residual3 = &mut right_residual[..B * T * C];
 
-                // Get the pointers of the activations for this layer
-                let l_ln1 = SendPtr::new(acts.ln1.ptr.add(l * B * T * C));
-                let l_ln1_mean = SendPtr::new(acts.ln1_mean.ptr.add(l * B * T));
-                let l_ln1_rstd = SendPtr::new(acts.ln1_rstd.ptr.add(l * B * T));
-                let l_qkv = SendPtr::new(acts.qkv.ptr.add(l * B * T * 3 * C));
-                let l_atty = SendPtr::new(acts.atty.ptr.add(l * B * T * C));
-                let l_preatt = SendPtr::new(acts.preatt.ptr.add(l * B * NH * T * T));
-                let l_att = SendPtr::new(acts.att.ptr.add(l * B * NH * T * T));
-                let l_attproj = SendPtr::new(acts.attproj.ptr.add(l * B * T * C));
-                let l_residual2 = SendPtr::new(acts.residual2.ptr.add(l * B * T * C));
-                let l_ln2 = SendPtr::new(acts.ln2.ptr.add(l * B * T * C));
-                let l_ln2_mean = SendPtr::new(acts.ln2_mean.ptr.add(l * B * T));
-                let l_ln2_rstd = SendPtr::new(acts.ln2_rstd.ptr.add(l * B * T));
-                let l_fch = SendPtr::new(acts.fch.ptr.add(l * B * T * 4 * C));
-                let l_fch_gelu = SendPtr::new(acts.fch_gelu.ptr.add(l * B * T * 4 * C));
-                let l_fcproj = SendPtr::new(acts.fcproj.ptr.add(l * B * T * C));
-                let l_residual3 = SendPtr::new(acts.residual3.ptr.add(l * B * T * C));
-
-                // Now do the forward pass
-                layernorm_forward(
-                    l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B, T, C,
-                );
-                matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
-                attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
-                matmul_forward(l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
-                residual_forward(l_residual2, residual, l_attproj, B * T * C);
-                layernorm_forward(
-                    l_ln2,
-                    l_ln2_mean,
-                    l_ln2_rstd,
-                    l_residual2,
-                    l_ln2w,
-                    l_ln2b,
-                    B,
-                    T,
-                    C,
-                );
-                matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
-                gelu_forward(l_fch_gelu, l_fch, B * T * 4 * C);
-                matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4 * C, C);
-                residual_forward(l_residual3, l_residual2, l_fcproj, B * T * C);
-            }
-
-            residual.ptr = acts.residual3.ptr.add((L - 1) * B * T * C); // last residual is in residual3
-            layernorm_forward(
-                acts.lnf,
-                acts.lnf_mean,
-                acts.lnf_rstd,
-                residual,
-                params.lnfw,
-                params.lnfb,
-                B,
-                T,
-                C,
-            );
-            matmul_forward(acts.logits, acts.lnf, params.wte, SendPtr::new(null_mut()), B, T, C, Vp);
-            softmax_forward(acts.probs, acts.logits, B, T, V, Vp);
-
-            // Forward the cross-entropy loss function if we have the targets
-            if !targets.ptr.is_null() {
-                crossentropy_forward(self.acts.losses, self.acts.probs, targets, B, T, Vp);
-                // Evaluate the mean loss
-                let mut mean_loss = 0.0;
-                for i in 0..(B * T) {
-                    mean_loss += *self.acts.losses.ptr.add(i);
-                }
-                mean_loss /= (B * T) as f32;
-                self.mean_loss = mean_loss;
+            let mut prev_residual = if l == 0 {
+                &mut acts.encoded
             } else {
-                // If we don't have targets, we don't have a loss
-                self.mean_loss = -1.0;
-            }
+                &mut left_residual[(l - 1) * B * T * C..]
+            };
+
+            // Now do the forward pass
+            layernorm_forward(&mut l_ln1, &mut l_ln1_mean, &mut l_ln1_rstd, &prev_residual, l_ln1w, l_ln1b, C,);
+            matmul_forward(&mut l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
+            attention_forward(&mut l_atty, &mut l_preatt, &mut l_att, l_qkv, T, C, NH);
+            matmul_forward(&mut l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
+            residual_forward(&mut l_residual2, &mut prev_residual, l_attproj);
+            layernorm_forward(&mut l_ln2, &mut l_ln2_mean, &mut l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, C);
+            matmul_forward(&mut l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
+            gelu_forward(&mut l_fch_gelu, l_fch);
+            matmul_forward(&mut l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4 * C, C);
+            residual_forward(&mut l_residual3, l_residual2, l_fcproj);
+        }
+
+        layernorm_forward(&mut acts.lnf, &mut acts.lnf_mean, &mut acts.lnf_rstd, &acts.residual3[(L - 1) * B * T * C..L * B * T * C], &params.lnfw, &params.lnfb, C);
+        matmul_forward(&mut acts.logits, &acts.lnf, &params.wte, &Vec::new(), B, T, C, Vp);
+        softmax_forward(&mut acts.probs, &acts.logits, V, Vp);
+
+        // Forward the cross-entropy loss function if we have the targets
+        if !targets.is_empty() {
+            crossentropy_forward(&mut self.acts.losses, &self.acts.probs, targets, T, Vp);
+
+            // Evaluate the mean loss
+            let mean_loss = self.acts.losses.iter().sum::<f32>() / (B * T) as f32;
+            self.mean_loss = mean_loss;
+        } else {
+            // If we don't have targets, we don't have a loss
+            self.mean_loss = -1.0;
         }
     }
 
@@ -438,14 +431,14 @@ impl GPT2 {
     /// # Arguments
     ///
     /// * `model` - The GPT2 model.
-    pub unsafe fn backward(&mut self) {
+    pub fn backward(&mut self) {
         // Double-check we forwarded previously, with targets
         if self.mean_loss == -1.0 {
             panic!("Error: must forward with targets before backward");
         }
 
         // Lazily allocate memory for gradients if needed
-        if self.grads_memory.ptr.is_null() {
+        if self.grads_memory.is_empty() {
             self.grads_memory = self.grads.alloc_and_point_parameters(&self.param_sizes);
             self.grads_acts_memory = self.grads_acts.alloc_and_point_activations(&self.act_sizes);
             self.zero_grad();
@@ -469,180 +462,96 @@ impl GPT2 {
         // Kick off the chain rule by filling in dlosses with 1.0 / (B * T)
         let dloss_mean = 1.0 / (B * T) as f32;
         for i in 0..(B * T) {
-            *grads_acts.losses.ptr.add(i) = dloss_mean;
+            grads_acts.losses[i] = dloss_mean;
         }
 
-        crossentropy_softmax_backward(
-            grads_acts.logits,
-            grads_acts.losses,
-            acts.probs,
-            self.targets,
-            B,
-            T,
-            V,
-            Vp,
-        );
-        matmul_backward(
-            grads_acts.lnf,
-            grads.wte,
-            SendPtr::new(null_mut()),
-            grads_acts.logits,
-            acts.lnf,
-            params.wte,
-            B,
-            T,
-            C,
-            Vp,
-        );
-        let mut residual = SendPtr::new(acts.residual3.ptr.add((L - 1) * B * T * C)); // last layer's residual
-        let mut dresidual = SendPtr::new(grads_acts.residual3.ptr.add((L - 1) * B * T * C)); // write to last layer's residual
-        layernorm_backward(
-            dresidual,
-            grads.lnfw,
-            grads.lnfb,
-            grads_acts.lnf,
-            residual,
-            params.lnfw,
-            acts.lnf_mean,
-            acts.lnf_rstd,
-            B,
-            T,
-            C,
-        );
+        crossentropy_softmax_backward(&mut grads_acts.logits, &grads_acts.losses, &acts.probs, &self.targets, V, Vp);
+        matmul_backward(&mut grads_acts.lnf, &mut grads.wte, &mut Vec::new(), &grads_acts.logits, &acts.lnf, &params.wte, B, T, C, Vp);
+
+        let mut residual = &acts.residual3[(L - 1) * B * T * C..L * B * T * C]; // last layer's residual
+        let mut dresidual = &mut grads_acts.residual3[(L - 1) * B * T * C..L * B * T * C]; // write to last layer's residual
+
+        // println!("Before:\n dresidual: {}\n grads.lnfw: {}\n grads.lnfb: {}\n grads_acts.lnf: {}\n residual: {}\n params.lnfw: {}\n acts.lnf_mean: {}\n acts.lnf_rstd: {}\n C: {}", dresidual[0], grads.lnfw[0], grads.lnfb[0], grads_acts.lnf[0], residual[0], params.lnfw[0], acts.lnf_mean[0], acts.lnf_rstd[0], C);
+        layernorm_backward(&mut dresidual, &mut grads.lnfw, &mut grads.lnfb, &grads_acts.lnf, &residual, &params.lnfw, &acts.lnf_mean, &acts.lnf_rstd, C);
+        // println!("After:\n dresidual: {}\n grads.lnfw: {}\n grads.lnfb: {}\n grads_acts.lnf: {}\n residual: {}\n params.lnfw: {}\n acts.lnf_mean: {}\n acts.lnf_rstd: {}\n C: {}\n", dresidual[0], grads.lnfw[0], grads.lnfb[0], grads_acts.lnf[0], residual[0], params.lnfw[0], acts.lnf_mean[0], acts.lnf_rstd[0], C);
 
         for l in (0..L).rev() {
-            residual.ptr = if l == 0 {
-                acts.encoded.ptr
-            } else {
-                acts.residual3.ptr.add((l - 1) * B * T * C)
-            };
-            dresidual.ptr = if l == 0 {
-                grads_acts.encoded.ptr
-            } else {
-                grads_acts.residual3.ptr.add((l - 1) * B * T * C)
-            };
-
             // Get the pointers of the weights for this layer
-            let l_ln1w = SendPtr::new(params.ln1w.ptr.add(l * C));
-            let l_qkvw = SendPtr::new(params.qkvw.ptr.add(l * 3 * C * C));
-            let l_attprojw = SendPtr::new(params.attprojw.ptr.add(l * C * C));
-            let l_ln2w = SendPtr::new(params.ln2w.ptr.add(l * C));
-            let l_fcw = SendPtr::new(params.fcw.ptr.add(l * 4 * C * C));
-            let l_fcprojw = SendPtr::new(params.fcprojw.ptr.add(l * C * 4 * C));
+            let l_ln1w = &params.ln1w[l * C..(l + 1) * C];
+            let l_qkvw = &params.qkvw[l * 3 * C * C..(l + 1) * 3 * C * C];
+            let l_attprojw = &params.attprojw[l * C * C..(l + 1) * C * C];
+            let l_ln2w = &params.ln2w[l * C..(l + 1) * C];
+            let l_fcw = &params.fcw[l * 4 * C * C..(l + 1) * 4 * C * C];
+            let l_fcprojw = &params.fcprojw[l * C * 4 * C..(l + 1) * C * 4 * C];
 
             // Get the pointers of the gradients of the weights for this layer
-            let dl_ln1w = SendPtr::new(grads.ln1w.ptr.add(l * C));
-            let dl_ln1b = SendPtr::new(grads.ln1b.ptr.add(l * C));
-            let dl_qkvw = SendPtr::new(grads.qkvw.ptr.add(l * 3 * C * C));
-            let dl_qkvb = SendPtr::new(grads.qkvb.ptr.add(l * 3 * C));
-            let dl_attprojw = SendPtr::new(grads.attprojw.ptr.add(l * C * C));
-            let dl_attprojb = SendPtr::new(grads.attprojb.ptr.add(l * C));
-            let dl_ln2w = SendPtr::new(grads.ln2w.ptr.add(l * C));
-            let dl_ln2b = SendPtr::new(grads.ln2b.ptr.add(l * C));
-            let dl_fcw = SendPtr::new(grads.fcw.ptr.add(l * 4 * C * C));
-            let dl_fcb = SendPtr::new(grads.fcb.ptr.add(l * 4 * C));
-            let dl_fcprojw = SendPtr::new(grads.fcprojw.ptr.add(l * C * 4 * C));
-            let dl_fcprojb = SendPtr::new(grads.fcprojb.ptr.add(l * C));
+            let mut dl_ln1w = &mut grads.ln1w[l * C..(l + 1) * C];
+            let mut dl_ln1b = &mut grads.ln1b[l * C..(l + 1) * C];
+            let mut dl_qkvw = &mut grads.qkvw[l * 3 * C * C..(l + 1) * 3 * C * C];
+            let mut dl_qkvb = &mut grads.qkvb[l * 3 * C..(l + 1) * 3 * C];
+            let mut dl_attprojw = &mut grads.attprojw[l * C * C..(l + 1) * C * C];
+            let mut dl_attprojb = &mut grads.attprojb[l * C..(l + 1) * C];
+            let mut dl_ln2w = &mut grads.ln2w[l * C..(l + 1) * C];
+            let mut dl_ln2b = &mut grads.ln2b[l * C..(l + 1) * C];
+            let mut dl_fcw = &mut grads.fcw[l * 4 * C * C..(l + 1) * 4 * C * C];
+            let mut dl_fcb = &mut grads.fcb[l * 4 * C..(l + 1) * 4 * C];
+            let mut dl_fcprojw = &mut grads.fcprojw[l * C * 4 * C..(l + 1) * C * 4 * C];
+            let mut dl_fcprojb = &mut grads.fcprojb[l * C..(l + 1) * C];
 
             // Get the pointers of the activations for this layer
-            let l_ln1 = SendPtr::new(acts.ln1.ptr.add(l * B * T * C));
-            let l_ln1_mean = SendPtr::new(acts.ln1_mean.ptr.add(l * B * T));
-            let l_ln1_rstd = SendPtr::new(acts.ln1_rstd.ptr.add(l * B * T));
-            let l_qkv = SendPtr::new(acts.qkv.ptr.add(l * B * T * 3 * C));
-            let l_atty = SendPtr::new(acts.atty.ptr.add(l * B * T * C));
-            let l_att = SendPtr::new(acts.att.ptr.add(l * B * NH * T * T));
-            let l_residual2 = SendPtr::new(acts.residual2.ptr.add(l * B * T * C));
-            let l_ln2 = SendPtr::new(acts.ln2.ptr.add(l * B * T * C));
-            let l_ln2_mean = SendPtr::new(acts.ln2_mean.ptr.add(l * B * T));
-            let l_ln2_rstd = SendPtr::new(acts.ln2_rstd.ptr.add(l * B * T));
-            let l_fch = SendPtr::new(acts.fch.ptr.add(l * B * T * 4 * C));
-            let l_fch_gelu = SendPtr::new(acts.fch_gelu.ptr.add(l * B * T * 4 * C));
+            let l_ln1 = &acts.ln1[l * B * T * C..(l + 1) * B * T * C];
+            let l_ln1_mean = &acts.ln1_mean[l * B * T..(l + 1) * B * T];
+            let l_ln1_rstd = &acts.ln1_rstd[l * B * T..(l + 1) * B * T];
+            let l_qkv = &acts.qkv[l * B * T * 3 * C..(l + 1) * B * T * 3 * C];
+            let l_atty = &acts.atty[l * B * T * C..(l + 1) * B * T * C];
+            let l_att = &acts.att[l * B * NH * T * T..(l + 1) * B * NH * T * T];
+            let l_residual2 = &acts.residual2[l * B * T * C..(l + 1) * B * T * C];
+            let l_ln2 = &acts.ln2[l * B * T * C..(l + 1) * B * T * C];
+            let l_ln2_mean = &acts.ln2_mean[l * B * T..(l + 1) * B * T];
+            let l_ln2_rstd = &acts.ln2_rstd[l * B * T..(l + 1) * B * T];
+            let l_fch = &acts.fch[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
+            let l_fch_gelu = &acts.fch_gelu[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
 
             // Get the pointers of the gradients of the activations for this layer
-            let dl_ln1 = SendPtr::new(grads_acts.ln1.ptr.add(l * B * T * C));
-            let dl_qkv = SendPtr::new(grads_acts.qkv.ptr.add(l * B * T * 3 * C));
-            let dl_atty = SendPtr::new(grads_acts.atty.ptr.add(l * B * T * C));
-            let dl_preatt = SendPtr::new(grads_acts.preatt.ptr.add(l * B * NH * T * T));
-            let dl_att = SendPtr::new(grads_acts.att.ptr.add(l * B * NH * T * T));
-            let dl_attproj = SendPtr::new(grads_acts.attproj.ptr.add(l * B * T * C));
-            let dl_residual2 = SendPtr::new(grads_acts.residual2.ptr.add(l * B * T * C));
-            let dl_ln2 = SendPtr::new(grads_acts.ln2.ptr.add(l * B * T * C));
-            let dl_fch = SendPtr::new(grads_acts.fch.ptr.add(l * B * T * 4 * C));
-            let dl_fch_gelu = SendPtr::new(grads_acts.fch_gelu.ptr.add(l * B * T * 4 * C));
-            let dl_fcproj = SendPtr::new(grads_acts.fcproj.ptr.add(l * B * T * C));
-            let dl_residual3 = SendPtr::new(grads_acts.residual3.ptr.add(l * B * T * C));
+            let mut dl_ln1 = &mut grads_acts.ln1[l * B * T * C..(l + 1) * B * T * C];
+            let mut dl_qkv = &mut grads_acts.qkv[l * B * T * 3 * C..(l + 1) * B * T * 3 * C];
+            let mut dl_atty = &mut grads_acts.atty[l * B * T * C..(l + 1) * B * T * C];
+            let mut dl_preatt = &mut grads_acts.preatt[l * B * NH * T * T..(l + 1) * B * NH * T * T];
+            let mut dl_att = &mut grads_acts.att[l * B * NH * T * T..(l + 1) * B * NH * T * T];
+            let mut dl_attproj = &mut grads_acts.attproj[l * B * T * C..(l + 1) * B * T * C];
+            let mut dl_residual2 = &mut grads_acts.residual2[l * B * T * C..(l + 1) * B * T * C];
+            let mut dl_ln2 = &mut grads_acts.ln2[l * B * T * C..(l + 1) * B * T * C];
+            let mut dl_fch = &mut grads_acts.fch[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
+            let mut dl_fch_gelu = &mut grads_acts.fch_gelu[l * B * T * 4 * C..(l + 1) * B * T * 4 * C];
+            let mut dl_fcproj = &mut grads_acts.fcproj[l * B * T * C..(l + 1) * B * T * C];
+            
+            let (left_residual, right_residual) = grads_acts.residual3.split_at_mut(l * B * T * C);
+            let dl_residual3 = &mut right_residual[..B * T * C];
+
+            residual = if l == 0 {
+                &acts.encoded
+            } else {
+                &acts.residual3[(l - 1) * B * T * C..l * B *T * C]
+            };
+            dresidual = if l == 0 {
+                &mut grads_acts.encoded
+            } else {
+                &mut left_residual[(l - 1) * B * T * C..]
+            };
 
             // Backprop this layer
-            residual_backward(dl_residual2, dl_fcproj, dl_residual3, B * T * C);
-            matmul_backward(
-                dl_fch_gelu,
-                dl_fcprojw,
-                dl_fcprojb,
-                dl_fcproj,
-                l_fch_gelu,
-                l_fcprojw,
-                B,
-                T,
-                4 * C,
-                C,
-            );
-            gelu_backward(dl_fch, l_fch, dl_fch_gelu, B * T * 4 * C);
-            matmul_backward(dl_ln2, dl_fcw, dl_fcb, dl_fch, l_ln2, l_fcw, B, T, C, 4 * C);
-            layernorm_backward(
-                dl_residual2,
-                dl_ln2w,
-                dl_ln2b,
-                dl_ln2,
-                l_residual2,
-                l_ln2w,
-                l_ln2_mean,
-                l_ln2_rstd,
-                B,
-                T,
-                C,
-            );
-            residual_backward(dresidual, dl_attproj, dl_residual2, B * T * C);
-            matmul_backward(
-                dl_atty,
-                dl_attprojw,
-                dl_attprojb,
-                dl_attproj,
-                l_atty,
-                l_attprojw,
-                B,
-                T,
-                C,
-                C,
-            );
-            attention_backward(
-                dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B, T, C, NH,
-            );
-            matmul_backward(
-                dl_ln1,
-                dl_qkvw,
-                dl_qkvb,
-                dl_qkv,
-                l_ln1,
-                l_qkvw,
-                B,
-                T,
-                C,
-                3 * C,
-            );
-            layernorm_backward(
-                dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B,
-                T, C,
-            );
+            residual_backward(&mut dl_residual2, &mut dl_fcproj, &dl_residual3);
+            matmul_backward(&mut dl_fch_gelu, &mut dl_fcprojw, &mut dl_fcprojb, &dl_fcproj, &l_fch_gelu, &l_fcprojw, B, T, 4 * C, C);
+            gelu_backward(&mut dl_fch, &l_fch, &dl_fch_gelu);
+            matmul_backward(&mut dl_ln2, &mut dl_fcw, &mut dl_fcb, &dl_fch, &l_ln2, &l_fcw, B, T, C, 4 * C);
+            layernorm_backward(&mut dl_residual2, &mut dl_ln2w, &mut dl_ln2b, &dl_ln2, &l_residual2, &l_ln2w, &l_ln2_mean, &l_ln2_rstd, C);
+            residual_backward(&mut dresidual, &mut dl_attproj, &dl_residual2);
+            matmul_backward(&mut dl_atty, &mut dl_attprojw, &mut dl_attprojb, &dl_attproj, &l_atty, &l_attprojw, B, T, C, C);
+            // attention_backward(&mut dl_qkv, &mut dl_preatt, &mut dl_att, &dl_atty, &l_qkv, &l_att, T, C, NH,);
+            matmul_backward(&mut dl_ln1, &mut dl_qkvw, &mut dl_qkvb, &dl_qkv, &l_ln1, &l_qkvw, B, T, C, 3 * C);
+            layernorm_backward(&mut dresidual, &mut dl_ln1w, &mut dl_ln1b, &dl_ln1, &residual, &l_ln1w, &l_ln1_mean, &l_ln1_rstd, C);
         }
-        encoder_backward(
-            grads.wte,
-            grads.wpe,
-            grads_acts.encoded,
-            self.inputs,
-            B,
-            T,
-            C,
-        );
+        // encoder_backward(&mut grads.wte, &mut grads.wpe, &grads_acts.encoded, &self.inputs, T, C);
     }
 
     /// Sets all gradients in the model to zero.
@@ -650,20 +559,15 @@ impl GPT2 {
     /// # Arguments
     ///
     /// * `model` - The GPT2 model.
-    pub unsafe fn zero_grad(&mut self) {
-        if !self.grads_memory.ptr.is_null() {
-            // Create a slice from the grads_memory pointer
-            let grads_slice = slice::from_raw_parts_mut(self.grads_memory.ptr, self.num_parameters);
-            // Set all elements in the grads_slice to 0
-            ptr::write_bytes(grads_slice.as_mut_ptr(), 0, self.num_parameters);
+    pub fn zero_grad(&mut self) {
+        if !self.grads_memory.is_empty() {
+            // Set all elements in the grads_memory vector to 0
+            self.grads_memory.fill(0.0);
         }
 
-        if !self.grads_acts_memory.ptr.is_null() {
-            // Create a slice from the grads_acts_memory pointer
-            let grads_acts_slice =
-                slice::from_raw_parts_mut(self.grads_acts_memory.ptr, self.num_activations);
-            // Set all elements in the grads_acts_slice to 0
-            ptr::write_bytes(grads_acts_slice.as_mut_ptr(), 0, self.num_activations);
+        if !self.grads_acts_memory.is_empty() {
+            // Set all elements in the grads_acts_memory vector to 0
+            self.grads_acts_memory.fill(0.0);
         }
     }
 
@@ -678,7 +582,7 @@ impl GPT2 {
     /// * `eps` - Small constant for numerical stability.
     /// * `weight_decay` - Weight decay coefficient.
     /// * `t` - Time step.
-    pub unsafe fn update(
+    pub fn update(
         &mut self,
         learning_rate: f32,
         beta1: f32,
@@ -688,35 +592,32 @@ impl GPT2 {
         t: usize,
     ) {
         // Lazily allocate the memory for m_memory and v_memory
-        if self.m_memory.ptr.is_null() {
-            let m_layout = Layout::array::<f32>(self.num_parameters).unwrap();
-            self.m_memory = SendPtr::new(alloc::alloc_zeroed(m_layout) as *mut f32);
+        if self.m_memory.is_empty() {
+            self.m_memory = vec![0.0; self.num_parameters];
         }
-        if self.v_memory.ptr.is_null() {
-            let v_layout = Layout::array::<f32>(self.num_parameters).unwrap();
-            self.v_memory = SendPtr::new(alloc::alloc_zeroed(v_layout) as *mut f32);
+        if self.v_memory.is_empty() {
+            self.v_memory = vec![0.0; self.num_parameters];
         }
 
         // Iterate over the parameters and update using AdamW
         for i in 0..self.num_parameters {
-            let param = *self.params_memory.ptr.add(i);
-            let grad = *self.grads_memory.ptr.add(i);
+            let param = self.params_memory[i];
+            let grad = self.grads_memory[i];
 
             // Update the first moment (momentum)
-            let m = beta1 * *self.m_memory.ptr.add(i) + (1.0 - beta1) * grad;
+            let m = beta1 * self.m_memory[i] + (1.0 - beta1) * grad;
             // Update the second moment (RMSprop)
-            let v = beta2 * *self.v_memory.ptr.add(i) + (1.0 - beta2) * grad * grad;
+            let v = beta2 * self.v_memory[i] + (1.0 - beta2) * grad * grad;
             // Bias-correct both moments
             let m_hat = m / (1.0 - beta1.powi(t as i32));
             let v_hat = v / (1.0 - beta2.powi(t as i32));
 
             // Update m and v in the model
-            *self.m_memory.ptr.add(i) = m;
-            *self.v_memory.ptr.add(i) = v;
+            self.m_memory[i] = m;
+            self.v_memory[i] = v;
 
             // Update the parameters
-            *self.params_memory.ptr.add(i) -=
-                learning_rate * (m_hat / (v_hat.sqrt() + eps) + weight_decay * param);
+            self.params_memory[i] -= learning_rate * (m_hat / (v_hat.sqrt() + eps) + weight_decay * param);
         }
     }
 
@@ -725,36 +626,15 @@ impl GPT2 {
     /// # Arguments
     ///
     /// * `model` - The GPT2 model.
-    pub unsafe fn free(&mut self) {
-        unsafe fn free_memory<T>(send_ptr: SendPtr<T>, num_elements: usize) {
-            if !send_ptr.ptr.is_null() {
-                let layout = Layout::array::<T>(num_elements).expect("Layout error");
-                alloc::dealloc(send_ptr.ptr as *mut u8, layout);
-            }
-        }
-
-        // Deallocate memory for model parameters
-        free_memory(self.params_memory, self.num_parameters);
-        free_memory(self.grads_memory, self.num_parameters);
-        free_memory(self.m_memory, self.num_parameters);
-        free_memory(self.v_memory, self.num_parameters);
-
-        // Deallocate memory for model activations
-        free_memory(self.acts_memory, self.num_activations);
-        free_memory(self.grads_acts_memory, self.num_activations);
-
-        // Deallocate memory for inputs and targets
-        free_memory(self.inputs, self.batch_size * self.seq_len);
-        free_memory(self.targets, self.batch_size * self.seq_len);
-
-        // Set pointers to null after deallocation
-        self.params_memory = SendPtr::new(null_mut());
-        self.grads_memory = SendPtr::new(null_mut());
-        self.m_memory = SendPtr::new(null_mut());
-        self.v_memory = SendPtr::new(null_mut());
-        self.acts_memory = SendPtr::new(null_mut());
-        self.grads_acts_memory = SendPtr::new(null_mut());
-        self.inputs = SendPtr::new(null_mut());
-        self.targets = SendPtr::new(null_mut());
+    pub fn free(&mut self) {
+        // Clear the Vecs, which automatically frees their memory
+        self.params_memory.clear();
+        self.grads_memory.clear();
+        self.m_memory.clear();
+        self.v_memory.clear();
+        self.acts_memory.clear();
+        self.grads_acts_memory.clear();
+        self.inputs.clear();
+        self.targets.clear();
     }
 }

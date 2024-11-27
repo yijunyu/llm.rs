@@ -1,11 +1,6 @@
-use std::alloc::{alloc, Layout};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::mem;
-use std::ptr::null_mut;
-
-use crate::send_ptr::SendPtr;
 
 pub struct DataLoader {
     // ----------------------------------------------------------------------------
@@ -33,13 +28,13 @@ pub struct DataLoader {
     // Output memory
     // ----------------------------------------------------------------------------
     /// Pointer to batch memory
-    pub batch: SendPtr<i32>,
+    pub batch: Vec<i32>,
 
     /// Pointer to input tokens
-    pub inputs: SendPtr<i32>,
+    pub inputs: Vec<i32>,
 
     /// Pointer to target tokens
-    pub targets: SendPtr<i32>,
+    pub targets: Vec<i32>,
 
     // ----------------------------------------------------------------------------
     // Convenience variables
@@ -60,16 +55,20 @@ impl DataLoader {
     /// # Returns
     ///
     /// A new `DataLoader` instance.
-    pub fn new(filename: &Path, B: usize, T: usize) -> Self {
+    pub fn new(
+        filename: &Path, 
+        B: usize, 
+        T: usize
+    ) -> Self {
         let mut loader = DataLoader {
             B,
             T,
             tokens_file: None,
             file_size: 0,
             current_position: 0,
-            batch: SendPtr::new(null_mut()),
-            inputs: SendPtr::new(null_mut()),
-            targets: SendPtr::new(null_mut()),
+            batch: Vec::new(),
+            inputs: Vec::new(),
+            targets: Vec::new(),
             num_batches: 0,
         };
 
@@ -98,20 +97,21 @@ impl DataLoader {
             }
         }
 
-        if loader.file_size < ((B * T + 1) * std::mem::size_of::<i32>()) as u64 {
+        let batch_size = B * T + 1;
+
+        if loader.file_size < (batch_size * std::mem::size_of::<i32>()) as u64 {
             panic!("Error: file size is too small for the batch size and sequence length");
         }
         loader.current_position = 0; // Start at the beginning
 
         // Allocate space for B*T + 1 integers to store the inputs and targets
-        unsafe {
-            let layout =
-                Layout::array::<i32>((B * T + 1) * mem::size_of::<i32>()).expect("Layout error");
-            loader.batch.ptr = alloc(layout) as *mut i32;
-            loader.inputs = loader.batch;
-            loader.targets.ptr = loader.batch.ptr.add(1); // Targets are shifted by one
-            loader.num_batches = (loader.file_size as usize) / (B * T * std::mem::size_of::<i32>());
-        }
+        loader.batch = vec![0; batch_size];  // Initialize with `batch_size` elements, filled with 0
+
+        // Populate inputs and targets as slices into the batch vector
+        loader.inputs = loader.batch[0..B * T].to_vec(); // First B*T elements are inputs
+        loader.targets = loader.batch[1..batch_size].to_vec(); // Targets are shifted by one
+
+        loader.num_batches = (loader.file_size as usize) / (B * T * std::mem::size_of::<i32>());
 
         loader
     }
@@ -126,8 +126,10 @@ impl DataLoader {
         let B = self.B;
         let T = self.T;
 
+        let batch_size = B * T + 1;
+
         // If we are at the end of the file, loop back to the beginning
-        if self.current_position + ((B * T + 1) * std::mem::size_of::<i32>()) as u64
+        if self.current_position + (batch_size * std::mem::size_of::<i32>()) as u64
             > self.file_size
         {
             self.current_position = 0;
@@ -141,18 +143,20 @@ impl DataLoader {
                 .expect("Seek Failed");
 
             // read B*T+1 integers from the file into batch
-            let mut buffer = vec![0; (B * T + 1) * std::mem::size_of::<i32>()];
+            let mut buffer = vec![0; batch_size * std::mem::size_of::<i32>()];
             tokens_file.read_exact(&mut buffer).expect("Read Failed");
 
-            // copy the buffer into the batch pointer
-            unsafe {
-                let batch_slice = std::slice::from_raw_parts_mut(self.batch.ptr, B * T + 1);
-                for (i, chunk) in buffer.chunks_exact(std::mem::size_of::<i32>()).enumerate() {
-                    batch_slice[i] = i32::from_ne_bytes(chunk.try_into().unwrap());
-                }
+            // Convert the buffer into i32 and populate the batch
+            for (i, chunk) in buffer.chunks_exact(std::mem::size_of::<i32>()).enumerate() {
+                let value = i32::from_ne_bytes(chunk.try_into().unwrap());
+                self.batch[i] = value;  // Copy into the batch vector
             }
 
-            // advance the current position by B*T integers
+            // Now, set inputs and targets to appropriate slices of the batch
+            self.inputs = self.batch[0..B * T].to_vec(); // Inputs are the first B*T elements
+            self.targets = self.batch[1..batch_size].to_vec(); // Targets are the B*T elements shifted by one
+
+            // Advance the current position by B*T integers
             self.current_position += (B * T) as u64 * std::mem::size_of::<i32>() as u64;
         } else {
             panic!("File is not open");
@@ -161,18 +165,14 @@ impl DataLoader {
 
     /// Frees the memory allocated by the DataLoader.
     pub fn free(&mut self) {
+        // Close the file safely
         if let Some(file) = self.tokens_file.take() {
-            drop(file); // Close the file by dropping it
+            drop(file); // File will be closed when dropped
         }
-        unsafe {
-            if !self.batch.ptr.is_null() {
-                let layout =
-                    std::alloc::Layout::array::<i32>(self.B * self.T + 1).expect("Layout error");
-                std::alloc::dealloc(self.batch.ptr as *mut u8, layout);
-            }
-        }
-        self.batch = SendPtr::new(null_mut());
-        self.inputs = SendPtr::new(null_mut());
-        self.targets = SendPtr::new(null_mut());
+
+        // Clear the batch vector and its contents
+        self.batch.clear();
+        self.inputs.clear();
+        self.targets.clear();
     }
 }

@@ -3,17 +3,13 @@
 pub mod dataloader;
 pub mod gpt2;
 pub mod tokenizer;
-pub mod send_ptr;
 
-use std::alloc::{self, Layout};
 use std::io::{self, Write};
 use std::path::Path;
-use std::ptr::null_mut;
 use std::time::Instant;
 
 use dataloader::DataLoader;
 use gpt2::*;
-use send_ptr::SendPtr;
 use tokenizer::*;
 
 const BATCH_SIZE: usize = 4;
@@ -65,17 +61,20 @@ fn random_f32(state: &mut u64) -> f32 {
 /// # Returns
 ///
 /// The sampled index based on the given probabilities.
-fn sample_mult(probabilities: *const f32, n: usize, coin: f32) -> usize {
-    unsafe {
-        let mut cdf = 0.0;
-        for i in 0..n {
-            cdf += *probabilities.add(i);
-            if coin < cdf {
-                return i;
-            }
+fn sample_mult(
+    probabilities: &[f32], 
+    n: usize, 
+    coin: f32
+) -> usize {
+    let mut cdf = 0.0;
+    for (i, &prob) in probabilities.iter().enumerate() {
+        cdf += prob;
+        if coin < cdf {
+            return i;
         }
-        n - 1 // in case of rounding errors
     }
+    
+    n - 1 // in case of rounding errors
 }
 
 // ----------------------------------------------------------------------------
@@ -106,78 +105,82 @@ pub fn main() {
         tiny_stories_val
     };
 
-    unsafe {
-        let mut train_loader = DataLoader::new(train_tokens, BATCH_SIZE, SEQ_LENGTH);
-        let mut val_loader = DataLoader::new(val_tokens, BATCH_SIZE, SEQ_LENGTH);
-        writeln!(lock, "train dataset num_batches: {}", train_loader.num_batches).unwrap();
-        writeln!(lock, "val dataset num_batches: {}", val_loader.num_batches).unwrap();
+    // Build DataLoader instances
+    let mut train_loader = DataLoader::new(train_tokens, BATCH_SIZE, SEQ_LENGTH);
+    let mut val_loader = DataLoader::new(val_tokens, BATCH_SIZE, SEQ_LENGTH);
+    writeln!(lock, "train dataset num_batches: {}", train_loader.num_batches).unwrap();
+    writeln!(lock, "val dataset num_batches: {}", val_loader.num_batches).unwrap();
 
-        let val_num_batches = 5;
+    let val_num_batches = 5;
 
-        // Initialize the Tokenizer
-        let tokenizer_path = Path::new("gpt2_tokenizer.bin");
-        let mut tokenizer = Tokenizer::new(tokenizer_path);
+    // Initialize the Tokenizer
+    let tokenizer_path = Path::new("gpt2_tokenizer.bin");
+    let mut tokenizer = Tokenizer::new(tokenizer_path);
 
-        // Memory for generating samples
-        let mut rng_state: u64 = 1337;
-        let gen_tokens_layout = Layout::array::<i32>(BATCH_SIZE * SEQ_LENGTH).expect("Failed to create layout");
-        let gen_tokens = SendPtr::new(alloc::alloc(gen_tokens_layout) as *mut i32);
-        let genT = 64;
+    // Memory for generating samples
+    let mut rng_state: u64 = 1337;
+    let mut gen_tokens = vec![50256; BATCH_SIZE * SEQ_LENGTH]; // Initialize with the EOS token (50256)
+    let genT = 64;
 
-        // Training loop
-        for step in 0..=40 {
-            // Estimate validation loss periodically
-            if step % 10 == 0 {
-                let mut val_loss = 0.0;
-                val_loader.reset();
-                for _ in 0..val_num_batches {
-                    val_loader.next_batch();
-                    model.forward(val_loader.inputs, val_loader.targets, BATCH_SIZE, SEQ_LENGTH);
-                    val_loss += model.mean_loss;
-                }
-                val_loss /= val_num_batches as f32;
-                writeln!(lock, "val loss {}", val_loss).unwrap();
+    // Training loop
+    for step in 0..=40 {
+        // Estimate validation loss periodically
+        if step % 10 == 0 {
+            let mut val_loss = 0.0;
+            val_loader.reset();
+            for _ in 0..val_num_batches {
+                val_loader.next_batch();
+                model.forward(&val_loader.inputs, &val_loader.targets, BATCH_SIZE, SEQ_LENGTH);
+                val_loss += model.mean_loss;
             }
-
-            // Generate text periodically
-            if step > 0 && step % 20 == 0 {
-                for i in 0..BATCH_SIZE * SEQ_LENGTH {
-                    *gen_tokens.ptr.add(i) = 50256;
-                }
-                writeln!(lock, "generating:\n---").unwrap();
-                for t in 1..genT {
-                    model.forward(gen_tokens, SendPtr::new(null_mut()), BATCH_SIZE, SEQ_LENGTH);
-                    let probs = model
-                        .acts
-                        .probs
-                        .ptr.add((t - 1) * model.config.padded_vocab_size);
-                    let coin = random_f32(&mut rng_state);
-                    let next_token = sample_mult(probs, model.config.vocab_size, coin) as u32;
-                    *gen_tokens.ptr.add(t) = next_token as i32;
-                    if tokenizer.init_ok {
-                        let token_str = tokenizer.decode(next_token);
-                        safe_print(token_str);
-                    } else {
-                        write!(lock, "{} ", next_token).unwrap();
-                    }
-                    // io::stdout().flush().unwrap();
-                }
-                writeln!(lock, "\n---").unwrap();
-            }
-
-            // Training step
-            let start = Instant::now();
-            train_loader.next_batch();
-            model.forward(train_loader.inputs, train_loader.targets, BATCH_SIZE, SEQ_LENGTH);
-            model.zero_grad();
-            model.backward();
-            model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
-            let duration = start.elapsed();
-            writeln!(lock, "step {}: train loss {:.6} (took {:.2} ms)",
-                step,
-                model.mean_loss,
-                duration.as_secs_f64() * 1000.0
-            ).unwrap();
+            val_loss /= val_num_batches as f32;
+            writeln!(lock, "val loss {}", val_loss).unwrap();
         }
+
+        // Generate text periodically
+        if step > 0 && step % 20 == 0 {
+            // Reset the gen_tokens with the EOS token (50256) for each batch
+            for i in 0..BATCH_SIZE * SEQ_LENGTH {
+                gen_tokens[i] = 50256;
+            }
+
+            writeln!(lock, "generating:\n---").unwrap();
+
+            for t in 1..genT {
+                model.forward(&gen_tokens, &Vec::new(), BATCH_SIZE, SEQ_LENGTH);
+                let probs = model
+                    .acts
+                    .probs
+                    .as_slice()
+                    .get((t - 1) * model.config.padded_vocab_size..t * model.config.padded_vocab_size)
+                    .unwrap();
+
+                let coin = random_f32(&mut rng_state);
+                let next_token = sample_mult(&probs, model.config.vocab_size, coin) as u32;
+                gen_tokens[t] = next_token as i32;
+                if tokenizer.init_ok {
+                    let token_str = tokenizer.decode(next_token);
+                    safe_print(token_str);
+                } else {
+                    write!(lock, "{} ", next_token).unwrap();
+                }
+                // io::stdout().flush().unwrap();
+            }
+            writeln!(lock, "\n---").unwrap();
+        }
+
+        // Training step
+        let start = Instant::now();
+        train_loader.next_batch();
+        model.forward(&train_loader.inputs, &train_loader.targets, BATCH_SIZE, SEQ_LENGTH);
+        model.zero_grad();
+        model.backward();
+        model.update(1e-4, 0.9, 0.999, 1e-8, 0.0, step + 1);
+        let duration = start.elapsed();
+        writeln!(lock, "step {}: train loss {:.6} (took {:.2} ms)",
+            step,
+            model.mean_loss,
+            duration.as_secs_f64() * 1000.0
+        ).unwrap();
     }
 }
