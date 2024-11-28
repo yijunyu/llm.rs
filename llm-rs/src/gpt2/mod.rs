@@ -113,6 +113,12 @@ pub struct GPT2 {
     pub mean_loss: f32,
 }
 
+fn slice_to_send_ptr(slice: &[f32]) -> SendPtr<f32> {
+    SendPtr {
+        ptr: slice.as_ptr() as *mut f32,
+    }
+}
+
 impl GPT2 {
     /// Creates a new GPT-2 model instance from a checkpoint file.
     ///
@@ -471,9 +477,32 @@ impl GPT2 {
         let mut residual = &acts.residual3[(L - 1) * B * T * C..L * B * T * C]; // last layer's residual
         let mut dresidual = &mut grads_acts.residual3[(L - 1) * B * T * C..L * B * T * C]; // write to last layer's residual
 
+        let mut dresidual_clone = dresidual.to_vec();
+        let mut lnfw_clone = grads.lnfw.to_vec();
+        let mut lnfb_clone = grads.lnfb.to_vec();
+
+        let dinp_ptr = slice_to_send_ptr(&mut dresidual_clone);
+        let dweight_ptr = slice_to_send_ptr(&mut lnfw_clone);
+        let dbias_ptr = slice_to_send_ptr(&mut lnfb_clone);        
+
+        let dout_ptr = slice_to_send_ptr(&grads_acts.lnf);
+        let inp_ptr = slice_to_send_ptr(&residual);
+        let weight_ptr = slice_to_send_ptr(&params.lnfw);
+        let mean_ptr = slice_to_send_ptr(&acts.lnf_mean);
+        let rstd_ptr = slice_to_send_ptr(&acts.lnf_rstd);
+
         // println!("Before:\n dresidual: {}\n grads.lnfw: {}\n grads.lnfb: {}\n grads_acts.lnf: {}\n residual: {}\n params.lnfw: {}\n acts.lnf_mean: {}\n acts.lnf_rstd: {}\n C: {}", dresidual[0], grads.lnfw[0], grads.lnfb[0], grads_acts.lnf[0], residual[0], params.lnfw[0], acts.lnf_mean[0], acts.lnf_rstd[0], C);
-        layernorm_backward(&mut dresidual, &mut grads.lnfw, &mut grads.lnfb, &grads_acts.lnf, &residual, &params.lnfw, &acts.lnf_mean, &acts.lnf_rstd, C);
+        layernorm_backward_slice(&mut dresidual, &mut grads.lnfw, &mut grads.lnfb, &grads_acts.lnf, &residual, &params.lnfw, &acts.lnf_mean, &acts.lnf_rstd, C);
         // println!("After:\n dresidual: {}\n grads.lnfw: {}\n grads.lnfb: {}\n grads_acts.lnf: {}\n residual: {}\n params.lnfw: {}\n acts.lnf_mean: {}\n acts.lnf_rstd: {}\n C: {}\n", dresidual[0], grads.lnfw[0], grads.lnfb[0], grads_acts.lnf[0], residual[0], params.lnfw[0], acts.lnf_mean[0], acts.lnf_rstd[0], C);
+        unsafe { 
+            layernorm_backward_ptr(dinp_ptr, dweight_ptr, dbias_ptr, dout_ptr, inp_ptr, weight_ptr, mean_ptr, rstd_ptr, B, T, C); 
+        }
+
+        assert_eq!(dresidual[0], dresidual_clone[0]);
+        assert_eq!(grads.lnfw[0], lnfw_clone[0]);
+        assert_eq!(grads.lnfb[0], lnfb_clone[0]);
+
+        std::process::exit(0);
 
         for l in (0..L).rev() {
             // Get the pointers of the weights for this layer
@@ -544,12 +573,12 @@ impl GPT2 {
             matmul_backward(&mut dl_fch_gelu, &mut dl_fcprojw, &mut dl_fcprojb, &dl_fcproj, &l_fch_gelu, &l_fcprojw, B, T, 4 * C, C);
             gelu_backward(&mut dl_fch, &l_fch, &dl_fch_gelu);
             matmul_backward(&mut dl_ln2, &mut dl_fcw, &mut dl_fcb, &dl_fch, &l_ln2, &l_fcw, B, T, C, 4 * C);
-            layernorm_backward(&mut dl_residual2, &mut dl_ln2w, &mut dl_ln2b, &dl_ln2, &l_residual2, &l_ln2w, &l_ln2_mean, &l_ln2_rstd, C);
+            // layernorm_backward(&mut dl_residual2, &mut dl_ln2w, &mut dl_ln2b, &dl_ln2, &l_residual2, &l_ln2w, &l_ln2_mean, &l_ln2_rstd, C);
             residual_backward(&mut dresidual, &mut dl_attproj, &dl_residual2);
             matmul_backward(&mut dl_atty, &mut dl_attprojw, &mut dl_attprojb, &dl_attproj, &l_atty, &l_attprojw, B, T, C, C);
             // attention_backward(&mut dl_qkv, &mut dl_preatt, &mut dl_att, &dl_atty, &l_qkv, &l_att, T, C, NH,);
             matmul_backward(&mut dl_ln1, &mut dl_qkvw, &mut dl_qkvb, &dl_qkv, &l_ln1, &l_qkvw, B, T, C, 3 * C);
-            layernorm_backward(&mut dresidual, &mut dl_ln1w, &mut dl_ln1b, &dl_ln1, &residual, &l_ln1w, &l_ln1_mean, &l_ln1_rstd, C);
+            // layernorm_backward(&mut dresidual, &mut dl_ln1w, &mut dl_ln1b, &dl_ln1, &residual, &l_ln1w, &l_ln1_mean, &l_ln1_rstd, C);
         }
         // encoder_backward(&mut grads.wte, &mut grads.wpe, &grads_acts.encoded, &self.inputs, T, C);
     }

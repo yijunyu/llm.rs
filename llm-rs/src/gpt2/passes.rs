@@ -124,6 +124,100 @@ pub fn layernorm_forward(
     });
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SendPtr<T> { pub ptr: *mut T }
+
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+
+impl<T> SendPtr<T> {
+    pub fn new(ptr: *mut T) -> SendPtr<T> {
+        SendPtr { ptr }
+    }
+}
+
+/// Computes the backward pass for Layer Normalization, updating gradients for inputs,
+/// weights, and biases.
+///
+/// # Arguments
+///
+/// * `dinp` - Gradient of the input tensor.
+/// * `dweight` - Gradient of the weight vector.
+/// * `dbias` - Gradient of the bias vector.
+/// * `dout` - Gradient of the output tensor.
+/// * `inp` - Input tensor.
+/// * `weight` - Weight vector.
+/// * `mean` - Mean of the input tensor across the normalization axis.
+/// * `rstd` - Reciprocal of the standard deviation of the input tensor.
+/// * `B` - Batch size.
+/// * `T` - Sequence length.
+/// * `C` - Feature dimension.
+pub unsafe fn layernorm_backward_ptr(
+    dinp: SendPtr<f32>,
+    dweight: SendPtr<f32>,
+    dbias: SendPtr<f32>,
+    dout: SendPtr<f32>,
+    inp: SendPtr<f32>,
+    weight: SendPtr<f32>,
+    mean: SendPtr<f32>,
+    rstd: SendPtr<f32>,
+    B: usize,
+    T: usize,
+    C: usize,
+) {
+    (0..B).into_par_iter().for_each(|b| {
+        (0..T).into_par_iter().for_each(|t| {
+            let dinp = dinp;
+            let dweight = dweight;
+            let dbias = dbias;
+            let dout = dout;
+            let inp = inp;
+            let weight = weight;
+            let mean = mean;
+            let rstd = rstd;
+
+            // Calculate the base addresses
+            let dout_bt = dout.ptr.add(b * T * C + t * C);
+            let inp_bt = inp.ptr.add(b * T * C + t * C);
+            let dinp_bt = dinp.ptr.add(b * T * C + t * C);
+            let mean_bt = *mean.ptr.add(b * T + t);
+            let rstd_bt = *rstd.ptr.add(b * T + t);
+
+            // First: two reduce operations
+            let mut dnorm_mean: f32 = 0.0;
+            let mut dnorm_norm_mean: f32 = 0.0;
+            for i in 0..C {
+                let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
+                let dnorm_i = *weight.ptr.add(i) * *dout_bt.add(i);
+                dnorm_mean += dnorm_i;
+                dnorm_norm_mean += dnorm_i * norm_bti;
+            }
+            dnorm_mean /= C as f32;
+            dnorm_norm_mean /= C as f32;
+
+            // Now iterate again and accumulate all the gradients
+            for i in 0..C {
+                let norm_bti = (*inp_bt.add(i) - mean_bt) * rstd_bt;
+                let dnorm_i = *weight.ptr.add(i) * *dout_bt.add(i);
+
+                // Gradient contribution to bias
+                *dbias.ptr.add(i) += *dout_bt.add(i);
+
+                // Gradient contribution to weight
+                *dweight.ptr.add(i) += norm_bti * *dout_bt.add(i);
+
+                // Gradient contribution to input
+                let mut dval: f32 = 0.0;
+                dval += dnorm_i; // Term 1
+                dval -= dnorm_mean; // Term 2
+                dval -= norm_bti * dnorm_norm_mean; // Term 3
+                dval *= rstd_bt; // Final scale
+                *dinp_bt.add(i) += dval;
+            }
+        });
+    });
+}
+
 /// Computes the backward pass for Layer Normalization, updating gradients for inputs,
 /// weights, and biases.
 ///
@@ -138,7 +232,7 @@ pub fn layernorm_forward(
 /// * `mean` - Mean of the input tensor across the normalization axis.
 /// * `rstd` - Reciprocal of the standard deviation of the input tensor.
 /// * `C` - Feature dimension.
-pub fn layernorm_backward(
+pub fn layernorm_backward_slice(
     dinp: &mut [f32],
     dweight: &mut [f32],
     dbias: &mut [f32],
