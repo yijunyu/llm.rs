@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
 Downloads and tokenizes the TinyStories dataset.
 - The download is from HuggingFace datasets.

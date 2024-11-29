@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
 Reference code for GPT-2 training and inference.
 Will save the model weights into files, to be read from C as initialization.
