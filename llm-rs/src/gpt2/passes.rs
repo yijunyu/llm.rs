@@ -328,7 +328,7 @@ pub fn layernorm_backward_slice(
     }
 }
 
-extern crate blas;
+use ndarray::{ArrayView2, ArrayView1, ArrayViewMut2};
 
 /// Computes the forward pass for matrix multiplication, producing the output tensor.
 ///
@@ -354,20 +354,21 @@ pub fn matmul_forward(
     OC: usize,
 ) {
     unsafe {
-        blas::sgemm(
-            b'N',
-            b'N',
-            (B * T) as i32, // Number of rows in A and C
-            OC as i32,      // Number of columns in B and C
-            C as i32,       // Number of columns in A and rows in B
-            1.0,            // Scalar multiplier for A*B
-            inp,            // Pass the slice for A
-            C as i32,       // Leading dimension of A
-            weight,         // Pass the slice for B
-            C as i32,       // Leading dimension of B
-            0.0,            // Scalar multiplier for the output matrix
-            out,            // Pass the mutable slice for C
-            OC as i32,      // Leading dimension of C
+        matrixmultiply::sgemm(
+            B * T,
+            C,
+            OC,
+            1.0,
+            inp.as_ptr(),
+            C as isize,
+            1,
+            weight.as_ptr(),
+            1,
+            C as isize,
+            0.0,
+            out.as_mut_ptr(),
+            OC as isize,
+            1,
         );
     }
 

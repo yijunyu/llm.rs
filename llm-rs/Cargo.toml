@@ -12,7 +12,8 @@ edition = "2021"
 matrixmultiply = { version = "0.3.9", features = ["threading"] }
 rand = "0.8.5"
 rayon = "1.9.0"
-blas = "0.22"
+ndarray = { version = "0.16.1", features = ["blas", "rayon"] }
+blas-sys = { version = "0.7.1" }
 
 [dev-dependencies]
 criterion = "*"
