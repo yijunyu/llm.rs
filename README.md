@@ -14,7 +14,7 @@ Using c2rust, train_gpt2.c was translated from Karpathy's [llm.c](https://github
 
 Although the transpilation of c2rust was successful, all the for loops have been turned into while loops.
 
-Using GPT-4, we are able to convert all the while loops back into for loops.
+Using GPT-4, we are able to convert all the while loops back into for loops.    
 
 ### 3. Utilizing [Mate](https://github.com/trusted-programming/mate)
 
@@ -27,10 +27,11 @@ Currently, the project is undergoing manual updates to find performance improvem
 ## Performance
 
 Currently this implementation is still slower than the C version based on the following benchmarks:
-|                               | C      | Rust   |C++     | Mojo   |
-|-------------------------------|--------|--------|--------|--------|
-| Intel Core i7-9700 8-core     | 2.447s | 1.251s |        |        |
-| Intel Xeon E5-2690 v3 12-core | 2.110s | 2.439s | 1.037s | 6.190s |
+|                                   | C      | Rust   |C++     | Mojo   |
+|-----------------------------------|--------|--------|--------|--------|
+| Intel Core i7-9700 8-core         | 2.447s | 1.251s |        |        |
+| [+] Intel Xeon E5-2690 v3 12-core | 2.110s | 2.439s | 1.037s | 6.190s |
+| Gitpod Server (Large) 8-core      |        | 1.977s | 1.060s |        |
 
 ![LLM Training Results](images/llm_training_esults.png)
 
@@ -56,6 +57,7 @@ This will run `cargo build --release` from the llm-rs cargo project after which 
 - [X] Restructure the training script for improved readability
 - [X] Implement the latest version of the tokenizer
 - [X] Implement the latest version of the data loader
-- [ ] Improve speed to match the performance of the C implementation 
+- [X] Improve speed to match the performance of the C implementation 
+- [ ] Improve speed to match the performance of the C++ implementation 
 - [ ] Migrate the testing script
 - [ ] Fix tinystories dataset download

@@ -114,7 +114,7 @@ impl Tokenizer {
 /// # Arguments
 ///
 /// * `piece` - The string slice to print.
-pub unsafe fn safe_print(piece: &str) {
+pub fn safe_print(piece: &str) {
     if piece.is_empty() {
         return;
     } 
