@@ -1,5 +1,5 @@
-use rayon::prelude::*;
 use core::time;
+use rayon::prelude::*;
 use std::f32::consts::PI;
 
 // ----------------------------------------------------------------------------
@@ -16,26 +16,21 @@ use std::f32::consts::PI;
 /// * `wpe` - Positional embedding matrix.
 /// * `T` - Sequence length.
 /// * `C` - Embedding dimension.
-pub fn encoder_forward(
-    out: &mut [f32],
-    inp: &[i32],
-    wte: &[f32],
-    wpe: &[f32],
-    T: usize,
-    C: usize,
-) {
-    out.par_chunks_mut(C).enumerate().for_each(|(bt, out_chunk)| {
-        let t = bt % T;
+pub fn encoder_forward(out: &mut [f32], inp: &[i32], wte: &[f32], wpe: &[f32], T: usize, C: usize) {
+    out.par_chunks_mut(C)
+        .enumerate()
+        .for_each(|(bt, out_chunk)| {
+            let t = bt % T;
 
-        let ix = inp[bt] as usize;
-        let wte_slice = &wte[ix * C..(ix + 1) * C];
-        let wpe_slice = &wpe[t * C..(t + 1) * C];
+            let ix = inp[bt] as usize;
+            let wte_slice = &wte[ix * C..(ix + 1) * C];
+            let wpe_slice = &wpe[t * C..(t + 1) * C];
 
-        // Sum the token and positional embeddings for this position
-        for i in 0..C {
-            out_chunk[i] = wte_slice[i] + wpe_slice[i];
-        }
-    });
+            // Sum the token and positional embeddings for this position
+            for i in 0..C {
+                out_chunk[i] = wte_slice[i] + wpe_slice[i];
+            }
+        });
 }
 
 /// Computes the backward pass for the encoder, updating gradients for token and position embeddings.
@@ -57,21 +52,24 @@ pub fn encoder_backward(
     C: usize,
 ) {
     // Parallel iteration over dwte and dwpe using zip_eq
-    dwte.par_chunks_mut(C).zip_eq(dwpe.par_chunks_mut(C)).enumerate().for_each(|(bt, (dwte_chunk, dwpe_chunk))| {
-        let t = bt % T;
+    dwte.par_chunks_mut(C)
+        .zip_eq(dwpe.par_chunks_mut(C))
+        .enumerate()
+        .for_each(|(bt, (dwte_chunk, dwpe_chunk))| {
+            let t = bt % T;
 
-        let dout_slice = &dout[bt * C..(bt + 1) * C];
-        let ix = inp[bt] as usize;
-        let dwte_slice = &mut dwte_chunk[ix * C..(ix + 1) * C];
-        let dwpe_slice = &mut dwpe_chunk[t * C..(t + 1) * C];
+            let dout_slice = &dout[bt * C..(bt + 1) * C];
+            let ix = inp[bt] as usize;
+            let dwte_slice = &mut dwte_chunk[ix * C..(ix + 1) * C];
+            let dwpe_slice = &mut dwpe_chunk[t * C..(t + 1) * C];
 
-        // Update the gradients for the token and positional embeddings
-        for i in 0..C {
-            let d = dout_slice[i];
-            dwte_slice[i] += d;
-            dwpe_slice[i] += d;
-        }
-    });
+            // Update the gradients for the token and positional embeddings
+            for i in 0..C {
+                let d = dout_slice[i];
+                dwte_slice[i] += d;
+                dwpe_slice[i] += d;
+            }
+        });
 }
 
 /// Computes the forward pass for Layer Normalization, producing normalized output,
@@ -101,31 +99,41 @@ pub fn layernorm_forward(
 ) {
     let eps: f32 = 1e-5;
 
-    out.par_chunks_mut(C).zip_eq(mean.into_par_iter()).zip_eq(rstd.into_par_iter()).enumerate().for_each(|(bt, ((out_chunk, mean_bt), rstd_bt))| {
-        // Find the corresponding slice in inp
-        let inp_slice = &inp[bt * C..(bt + 1) * C]; // Sliced batch `b`, time step `t`
+    out.par_chunks_mut(C)
+        .zip_eq(mean.into_par_iter())
+        .zip_eq(rstd.into_par_iter())
+        .enumerate()
+        .for_each(|(bt, ((out_chunk, mean_bt), rstd_bt))| {
+            // Find the corresponding slice in inp
+            let inp_slice = &inp[bt * C..(bt + 1) * C]; // Sliced batch `b`, time step `t`
 
-        // Step 1: Compute mean
-        let mean_value = inp_slice.iter().copied().sum::<f32>() / C as f32;
+            // Step 1: Compute mean
+            let mean_value = inp_slice.iter().copied().sum::<f32>() / C as f32;
 
-        // Step 2: Compute variance and standard deviation
-        let variance = inp_slice.iter().map(|&x| (x - mean_value).powi(2)).sum::<f32>() / C as f32;
-        let rstd_value = (variance + eps).sqrt().recip();
+            // Step 2: Compute variance and standard deviation
+            let variance = inp_slice
+                .iter()
+                .map(|&x| (x - mean_value).powi(2))
+                .sum::<f32>()
+                / C as f32;
+            let rstd_value = (variance + eps).sqrt().recip();
 
-        // Step 3: Normalize and apply scaling and bias
-        inp_slice.iter().enumerate().for_each(|(i, &x)| {
-            let normalized = (x - mean_value) * rstd_value; // Normalize
-            out_chunk[i] = normalized * weight[i] + bias[i]; // Scale and shift
+            // Step 3: Normalize and apply scaling and bias
+            inp_slice.iter().enumerate().for_each(|(i, &x)| {
+                let normalized = (x - mean_value) * rstd_value; // Normalize
+                out_chunk[i] = normalized * weight[i] + bias[i]; // Scale and shift
+            });
+
+            // Step 4: Store mean and reciprocal standard deviation for backprop
+            *mean_bt = mean_value;
+            *rstd_bt = rstd_value;
         });
-
-        // Step 4: Store mean and reciprocal standard deviation for backprop
-        *mean_bt = mean_value;
-        *rstd_bt = rstd_value;
-    });
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SendPtr<T> { pub ptr: *mut T }
+pub struct SendPtr<T> {
+    pub ptr: *mut T,
+}
 
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
@@ -244,70 +252,74 @@ pub fn layernorm_backward_slice(
     C: usize,
 ) {
     // Use par_chunks_mut for efficient parallel iteration
-    let (acc_dweight, acc_dbias) = dinp.par_chunks_mut(C).enumerate().fold(
-        // Initial accumulator values: zero-initialized vectors for dweight and dbias
-        || (vec![0.0; C], vec![0.0; C]),
-        |(mut acc_dweight, mut acc_dbias), (bt, dinp_chunk)| {
-            let dout_slice = &dout[bt * C..(bt + 1) * C];
-            let inp_slice = &inp[bt * C..(bt + 1) * C];
+    let (acc_dweight, acc_dbias) = dinp
+        .par_chunks_mut(C)
+        .enumerate()
+        .fold(
+            // Initial accumulator values: zero-initialized vectors for dweight and dbias
+            || (vec![0.0; C], vec![0.0; C]),
+            |(mut acc_dweight, mut acc_dbias), (bt, dinp_chunk)| {
+                let dout_slice = &dout[bt * C..(bt + 1) * C];
+                let inp_slice = &inp[bt * C..(bt + 1) * C];
 
-            let mean_value = mean[bt]; // Mean for the current batch/time
-            let rstd_value = rstd[bt]; // Reciprocal standard deviation for the current batch/time
+                let mean_value = mean[bt]; // Mean for the current batch/time
+                let rstd_value = rstd[bt]; // Reciprocal standard deviation for the current batch/time
 
-            // First: two reduce operations
-            let mut dnorm_mean = 0.0;
-            let mut dnorm_norm_mean = 0.0;
+                // First: two reduce operations
+                let mut dnorm_mean = 0.0;
+                let mut dnorm_norm_mean = 0.0;
 
-            for i in 0..C {
-                let norm_bti = (inp_slice[i] - mean_value) * rstd_value;
-                let dnorm_i = weight[i] * dout_slice[i];
-                dnorm_mean += dnorm_i;
-                dnorm_norm_mean += dnorm_i * norm_bti;
-            }
+                for i in 0..C {
+                    let norm_bti = (inp_slice[i] - mean_value) * rstd_value;
+                    let dnorm_i = weight[i] * dout_slice[i];
+                    dnorm_mean += dnorm_i;
+                    dnorm_norm_mean += dnorm_i * norm_bti;
+                }
 
-            dnorm_mean /= C as f32;
-            dnorm_norm_mean /= C as f32;
+                dnorm_mean /= C as f32;
+                dnorm_norm_mean /= C as f32;
 
-            // Now iterate again and accumulate all the gradients
-            for i in 0..C {
-                let output_grad = dout_slice[i];
-                let norm_bti = (inp_slice[i] - mean_value) * rstd_value;
-                let dnorm_i = weight[i] * output_grad;
+                // Now iterate again and accumulate all the gradients
+                for i in 0..C {
+                    let output_grad = dout_slice[i];
+                    let norm_bti = (inp_slice[i] - mean_value) * rstd_value;
+                    let dnorm_i = weight[i] * output_grad;
 
-                // Gradient contribution to bias
-                acc_dbias[i] += output_grad;
+                    // Gradient contribution to bias
+                    acc_dbias[i] += output_grad;
 
-                // Gradient contribution to weight
-                acc_dweight[i] += norm_bti * output_grad;
+                    // Gradient contribution to weight
+                    acc_dweight[i] += norm_bti * output_grad;
 
-                // Gradient contribution to input
-                let mut dval = 0.0;
-                dval += dnorm_i; // Term 1
-                dval -= dnorm_mean; // Term 2
-                dval -= norm_bti * dnorm_norm_mean; // Term 3
-                dval *= rstd_value; // Final scale
-                dinp_chunk[i] += dval;
-            }
+                    // Gradient contribution to input
+                    let mut dval = 0.0;
+                    dval += dnorm_i; // Term 1
+                    dval -= dnorm_mean; // Term 2
+                    dval -= norm_bti * dnorm_norm_mean; // Term 3
+                    dval *= rstd_value; // Final scale
+                    dinp_chunk[i] += dval;
+                }
 
-            // Return the updated accumulator (dweight, dbias)
-            (acc_dweight, acc_dbias)
-        },
-    ).reduce(
-        // Identity for reduction: we start with zeroed accumulators
-        || (vec![0.0; C], vec![0.0; C]),
-        |(acc_dweight1, acc_dbias1), (acc_dweight2, acc_dbias2)| {
-            // Combine the results of different threads
-            let mut combined_dweight = acc_dweight1;
-            let mut combined_dbias = acc_dbias1;
+                // Return the updated accumulator (dweight, dbias)
+                (acc_dweight, acc_dbias)
+            },
+        )
+        .reduce(
+            // Identity for reduction: we start with zeroed accumulators
+            || (vec![0.0; C], vec![0.0; C]),
+            |(acc_dweight1, acc_dbias1), (acc_dweight2, acc_dbias2)| {
+                // Combine the results of different threads
+                let mut combined_dweight = acc_dweight1;
+                let mut combined_dbias = acc_dbias1;
 
-            for i in 0..C {
-                combined_dweight[i] += acc_dweight2[i];
-                combined_dbias[i] += acc_dbias2[i];
-            }
+                for i in 0..C {
+                    combined_dweight[i] += acc_dweight2[i];
+                    combined_dbias[i] += acc_dbias2[i];
+                }
 
-            (combined_dweight, combined_dbias)
-        }
-    );
+                (combined_dweight, combined_dbias)
+            },
+        );
 
     // After the fold, accumulate the results into dweight and dbias
     for i in 0..C {
@@ -315,6 +327,8 @@ pub fn layernorm_backward_slice(
         dbias[i] += acc_dbias[i];
     }
 }
+
+extern crate blas;
 
 /// Computes the forward pass for matrix multiplication, producing the output tensor.
 ///
@@ -340,21 +354,20 @@ pub fn matmul_forward(
     OC: usize,
 ) {
     unsafe {
-        matrixmultiply::sgemm(
-            B * T,
-            C,
-            OC,
-            1.0,
-            inp.as_ptr(),
-            C as isize,
-            1,
-            weight.as_ptr(),
-            1,
-            C as isize,
-            0.0,
-            out.as_mut_ptr(),
-            OC as isize,
-            1,
+        blas::sgemm(
+            b'N',
+            b'N',
+            (B * T) as i32, // Number of rows in A and C
+            OC as i32,      // Number of columns in B and C
+            C as i32,       // Number of columns in A and rows in B
+            1.0,            // Scalar multiplier for A*B
+            inp,            // Pass the slice for A
+            C as i32,       // Leading dimension of A
+            weight,         // Pass the slice for B
+            C as i32,       // Leading dimension of B
+            0.0,            // Scalar multiplier for the output matrix
+            out,            // Pass the mutable slice for C
+            OC as i32,      // Leading dimension of C
         );
     }
 
@@ -416,7 +429,7 @@ pub fn matmul_backward(
             C as isize,
             1,
         );
-    
+
         matrixmultiply::sgemm(
             OC,
             B * T,
@@ -468,53 +481,66 @@ pub fn attention_forward(
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    out.par_chunks_mut(hs).zip_eq(preatt.par_chunks_mut(T)).zip_eq(att.par_chunks_mut(T)).enumerate().for_each(|(bth, ((out_chunk, preatt_chunk), att_chunk))| {
-        let b = bth / (T * NH); // Batch index
-        let t = (bth / NH) % T; // Time step index
-        let h = bth % NH;       // Attention head index
+    out.par_chunks_mut(hs)
+        .zip_eq(preatt.par_chunks_mut(T))
+        .zip_eq(att.par_chunks_mut(T))
+        .enumerate()
+        .for_each(|(bth, ((out_chunk, preatt_chunk), att_chunk))| {
+            let b = bth / (T * NH); // Batch index
+            let t = (bth / NH) % T; // Time step index
+            let h = bth % NH; // Attention head index
 
-        // Compute index for accessing query vector in `inp`
-        let query_offset = b * T * C3 + t * C3 + h * hs;
-        let query_t = &inp[query_offset..query_offset + hs];
-        
-        // Step 1: Compute unnormalized attention scores (dot product with scaling)
-        let mut maxval = f32::NEG_INFINITY;
-        for t2 in 0..=t {
-            let key_offset = b * T * C3 + t2 * C3 + h * hs + C; // Offset for key vector
-            let key_t2 = &inp[key_offset..key_offset + hs];
+            // Compute index for accessing query vector in `inp`
+            let query_offset = b * T * C3 + t * C3 + h * hs;
+            let query_t = &inp[query_offset..query_offset + hs];
 
-            let val = query_t.iter().zip(key_t2).map(|(&q, &k)| q * k).sum::<f32>() * scale;
-            maxval = maxval.max(val);
-            preatt_chunk[t2] = val;
-        }
+            // Step 1: Compute unnormalized attention scores (dot product with scaling)
+            let mut maxval = f32::NEG_INFINITY;
+            for t2 in 0..=t {
+                let key_offset = b * T * C3 + t2 * C3 + h * hs + C; // Offset for key vector
+                let key_t2 = &inp[key_offset..key_offset + hs];
 
-        // Step 2: Compute softmax over attention scores
-        let mut expsum = 0.0;
-        for t2 in 0..=t {
-            let expv = (preatt_chunk[t2] - maxval).exp();
-            expsum += expv;
-            att_chunk[t2] = expv;
-        }
-        let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
-
-        for t2 in 0..T {
-            att_chunk[t2] = if t2 <= t { att_chunk[t2] * expsum_inv } else { 0.0 };
-        }
-
-        // Step 3: Compute weighted sum of values for attention output
-        for i in 0..hs {
-            out_chunk[i] = 0.0;
-        }
-        for t2 in 0..=t {
-            let value_offset = b * T * C3 + t2 * C3 + h * hs + 2 * C; // Offset for value vector
-            let value_t2 = &inp[value_offset..value_offset + hs];
-            let att_weight = att_chunk[t2];
-
-            for (o, &v) in out_chunk.iter_mut().zip(value_t2) {
-                *o += att_weight * v;
+                let val = query_t
+                    .iter()
+                    .zip(key_t2)
+                    .map(|(&q, &k)| q * k)
+                    .sum::<f32>()
+                    * scale;
+                maxval = maxval.max(val);
+                preatt_chunk[t2] = val;
             }
-        }
-    });
+
+            // Step 2: Compute softmax over attention scores
+            let mut expsum = 0.0;
+            for t2 in 0..=t {
+                let expv = (preatt_chunk[t2] - maxval).exp();
+                expsum += expv;
+                att_chunk[t2] = expv;
+            }
+            let expsum_inv = if expsum == 0.0 { 0.0 } else { 1.0 / expsum };
+
+            for t2 in 0..T {
+                att_chunk[t2] = if t2 <= t {
+                    att_chunk[t2] * expsum_inv
+                } else {
+                    0.0
+                };
+            }
+
+            // Step 3: Compute weighted sum of values for attention output
+            for i in 0..hs {
+                out_chunk[i] = 0.0;
+            }
+            for t2 in 0..=t {
+                let value_offset = b * T * C3 + t2 * C3 + h * hs + 2 * C; // Offset for value vector
+                let value_t2 = &inp[value_offset..value_offset + hs];
+                let att_weight = att_chunk[t2];
+
+                for (o, &v) in out_chunk.iter_mut().zip(value_t2) {
+                    *o += att_weight * v;
+                }
+            }
+        });
 }
 
 /// Backward pass for attention mechanisms, updating gradients for inputs,
@@ -546,65 +572,69 @@ pub fn attention_backward(
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
 
-    dinp.par_chunks_mut(hs).zip_eq(dpreatt.par_chunks_mut(T)).zip_eq(datt.par_chunks_mut(T)).enumerate().for_each(|(bth, ((dinp_chunk, dpreatt_chunk), datt_chunk))| {
-        let b = bth / (T * NH); // Batch index
-        let t = (bth / NH) % T; // Time step index
-        let h = bth % NH;       // Attention head index
+    dinp.par_chunks_mut(hs)
+        .zip_eq(dpreatt.par_chunks_mut(T))
+        .zip_eq(datt.par_chunks_mut(T))
+        .enumerate()
+        .for_each(|(bth, ((dinp_chunk, dpreatt_chunk), datt_chunk))| {
+            let b = bth / (T * NH); // Batch index
+            let t = (bth / NH) % T; // Time step index
+            let h = bth % NH; // Attention head index
 
-        // Access pointers for query and gradients of query
-        let query_offset = b * T * C3 + t * C3 + h * hs;
-        let query_t = &inp[query_offset..query_offset + hs];
+            // Access pointers for query and gradients of query
+            let query_offset = b * T * C3 + t * C3 + h * hs;
+            let query_t = &inp[query_offset..query_offset + hs];
 
-        // Split `dinp` into two non-overlapping slices to avoid mutable borrowing conflicts
-        let (dquery_t, dinp_rest) = dinp_chunk.split_at_mut(query_offset + hs);
-        let dquery_t = &mut dquery_t[query_offset..];
-        
-        // Access attention scores and gradient chunks
-        let datt_slice = &att[bth * T..(bth * T + T)];
+            // Split `dinp` into two non-overlapping slices to avoid mutable borrowing conflicts
+            let (dquery_t, dinp_rest) = dinp_chunk.split_at_mut(query_offset + hs);
+            let dquery_t = &mut dquery_t[query_offset..];
 
-        // Step 1: Backward pass through the value accumulation (dout -> datt)
-        let dout_offset = b * T * C + t * C + h * hs;
-        let dout_bth = &dout[dout_offset..dout_offset + hs];
-        for t2 in 0..=t {
-            let value_offset = b * T * C3 + t2 * C3 + h * hs + 2 * C; // +C*2 for value offset
-            let value_t2 = &inp[value_offset..value_offset + hs];
+            // Access attention scores and gradient chunks
+            let datt_slice = &att[bth * T..(bth * T + T)];
 
-            // Split `dinp_rest` to get `dvalue_t2` while preserving immutability elsewhere
-            let (dvalue_t2, _) = dinp_rest.split_at_mut(value_offset - query_offset);
-            let dvalue_t2 = &mut dvalue_t2[..hs];
+            // Step 1: Backward pass through the value accumulation (dout -> datt)
+            let dout_offset = b * T * C + t * C + h * hs;
+            let dout_bth = &dout[dout_offset..dout_offset + hs];
+            for t2 in 0..=t {
+                let value_offset = b * T * C3 + t2 * C3 + h * hs + 2 * C; // +C*2 for value offset
+                let value_t2 = &inp[value_offset..value_offset + hs];
 
-            let att_weight = datt_slice[t2];
-            for i in 0..hs {
-                datt_chunk[t2] += value_t2[i] * dout_bth[i];
-                dvalue_t2[i] += att_weight * dout_bth[i];
+                // Split `dinp_rest` to get `dvalue_t2` while preserving immutability elsewhere
+                let (dvalue_t2, _) = dinp_rest.split_at_mut(value_offset - query_offset);
+                let dvalue_t2 = &mut dvalue_t2[..hs];
+
+                let att_weight = datt_slice[t2];
+                for i in 0..hs {
+                    datt_chunk[t2] += value_t2[i] * dout_bth[i];
+                    dvalue_t2[i] += att_weight * dout_bth[i];
+                }
             }
-        }
 
-        // Step 2: Backward pass through the softmax (datt -> dpreatt)
-        for t2 in 0..=t {
-            for t3 in 0..=t {
-                let indicator = if t2 == t3 { 1.0 } else { 0.0 };
-                let local_derivative = datt_slice[t2] * (indicator - datt_slice[t3]);
-                dpreatt_chunk[t3] += local_derivative * datt_chunk[t2];
+            // Step 2: Backward pass through the softmax (datt -> dpreatt)
+            for t2 in 0..=t {
+                for t3 in 0..=t {
+                    let indicator = if t2 == t3 { 1.0 } else { 0.0 };
+                    let local_derivative = datt_slice[t2] * (indicator - datt_slice[t3]);
+                    dpreatt_chunk[t3] += local_derivative * datt_chunk[t2];
+                }
             }
-        }
 
-        // Step 3: Backward pass for the query-key dot product (dpreatt -> dinp)
-        for t2 in 0..=t {
-            let key_offset = b * T * C3 + t2 * C3 + h * hs + C; // +C for key offset
-            let key_t2 = &inp[key_offset..key_offset + hs];
+            // Step 3: Backward pass for the query-key dot product (dpreatt -> dinp)
+            for t2 in 0..=t {
+                let key_offset = b * T * C3 + t2 * C3 + h * hs + C; // +C for key offset
+                let key_t2 = &inp[key_offset..key_offset + hs];
 
-            // Further split `dinp_rest` to get `dkey_t2` independently
-            let (_, dkey_t2) = dinp_rest.split_at_mut(key_offset - query_offset);
-            let dkey_t2 = &mut dkey_t2[..hs];
+                // Further split `dinp_rest` to get `dkey_t2` independently
+                let (_, dkey_t2) = dinp_rest.split_at_mut(key_offset - query_offset);
+                let dkey_t2 = &mut dkey_t2[..hs];
 
-            let dpreatt_weight = dpreatt_chunk[t2] * scale;
-            for i in 0..hs {
-                dquery_t[i] += key_t2[i] * dpreatt_weight;
-                dkey_t2[i] += query_t[i] * dpreatt_weight;
+                let dpreatt_weight = dpreatt_chunk[t2] * scale;
+                for i in 0..hs {
+                    dquery_t[i] += key_t2[i] * dpreatt_weight;
+                    dkey_t2[i] += query_t[i] * dpreatt_weight;
+                }
             }
-        }
-    });
+        });
 }
 
 /// Applies the GELU activation function to the input tensor.
@@ -613,10 +643,7 @@ pub fn attention_backward(
 ///
 /// * `out` - Output tensor to store the GELU results.
 /// * `inp` - Input tensor.
-pub fn gelu_forward(
-    out: &mut [f32], 
-    inp: &[f32], 
-) {
+pub fn gelu_forward(out: &mut [f32], inp: &[f32]) {
     out.into_par_iter().enumerate().for_each(|(i, out_val)| {
         // Load the input value
         let x = inp[i];
@@ -636,11 +663,7 @@ pub fn gelu_forward(
 /// * `dinp` - Gradient of the input tensor.
 /// * `inp` - Input tensor.
 /// * `dout` - Gradient of the output tensor.
-pub fn gelu_backward(
-    dinp: &mut [f32], 
-    inp: &[f32], 
-    dout: &[f32], 
-) {
+pub fn gelu_backward(dinp: &mut [f32], inp: &[f32], dout: &[f32]) {
     let gelu_scaling_factor = (2.0 / PI).sqrt();
 
     dinp.into_par_iter().enumerate().for_each(|(i, dinp_val)| {
@@ -675,11 +698,7 @@ pub fn gelu_backward(
 /// * `out` - Output tensor to store the result.
 /// * `inp1` - First input tensor.
 /// * `inp2` - Second input tensor.
-pub fn residual_forward(
-    out: &mut [f32],
-    inp1: &[f32],
-    inp2: &[f32],
-) {
+pub fn residual_forward(out: &mut [f32], inp1: &[f32], inp2: &[f32]) {
     out.into_par_iter().enumerate().for_each(|(i, out_val)| {
         // Perform element-wise addition
         *out_val = inp1[i] + inp2[i];
@@ -693,16 +712,16 @@ pub fn residual_forward(
 /// * `dinp1` - Gradient of the first input tensor.
 /// * `dinp2` - Gradient of the second input tensor.
 /// * `dout` - Gradient of the output tensor.
-pub fn residual_backward(
-    dinp1: &mut [f32],
-    dinp2: &mut [f32],
-    dout: &[f32],
-) {
-    dinp1.into_par_iter().zip_eq(dinp2.into_par_iter()).enumerate().for_each(|(i, (dinp1_val, dinp2_val))| {
-        // Update the gradients for the inputs
-        *dinp1_val += dout[i];
-        *dinp2_val += dout[i];
-    });
+pub fn residual_backward(dinp1: &mut [f32], dinp2: &mut [f32], dout: &[f32]) {
+    dinp1
+        .into_par_iter()
+        .zip_eq(dinp2.into_par_iter())
+        .enumerate()
+        .for_each(|(i, (dinp1_val, dinp2_val))| {
+            // Update the gradients for the inputs
+            *dinp1_val += dout[i];
+            *dinp2_val += dout[i];
+        });
 }
 
 /// Computes the softmax probabilities from logits in parallel.
@@ -713,43 +732,41 @@ pub fn residual_backward(
 /// * `logits` - Input unnormalized log probabilities (B, T, Vp).
 /// * `V` - Real vocabulary size.
 /// * `Vp` - Padded vocabulary size.
-pub fn softmax_forward(
-    probs: &mut [f32],
-    logits: &[f32],
-    V: usize,
-    Vp: usize,
-) {
-    probs.par_chunks_mut(Vp).enumerate().for_each(|(bt, probs_chunk)| {
-        // Calculate the base addresses
-        let logits_slice = &logits[bt * Vp..(bt + 1) * Vp];
+pub fn softmax_forward(probs: &mut [f32], logits: &[f32], V: usize, Vp: usize) {
+    probs
+        .par_chunks_mut(Vp)
+        .enumerate()
+        .for_each(|(bt, probs_chunk)| {
+            // Calculate the base addresses
+            let logits_slice = &logits[bt * Vp..(bt + 1) * Vp];
 
-        // Calculate maxval for numerical stability
-        let mut maxval = f32::NEG_INFINITY;
-        for i in 0..V {
-            let logit = logits_slice[i];
-            if logit > maxval {
-                maxval = logit;
+            // Calculate maxval for numerical stability
+            let mut maxval = f32::NEG_INFINITY;
+            for i in 0..V {
+                let logit = logits_slice[i];
+                if logit > maxval {
+                    maxval = logit;
+                }
             }
-        }
 
-        // Calculate softmax numerator and denominator (sum)
-        let mut sum = 0.0;
-        for i in 0..V {
-            let exp_val = (logits_slice[i] - maxval).exp();
-            probs_chunk[i] = exp_val;
-            sum += exp_val;
-        }
+            // Calculate softmax numerator and denominator (sum)
+            let mut sum = 0.0;
+            for i in 0..V {
+                let exp_val = (logits_slice[i] - maxval).exp();
+                probs_chunk[i] = exp_val;
+                sum += exp_val;
+            }
 
-        // Normalize the probabilities
-        for i in 0..V {
-            probs_chunk[i] = probs_chunk[i] / sum;
-        }
+            // Normalize the probabilities
+            for i in 0..V {
+                probs_chunk[i] = probs_chunk[i] / sum;
+            }
 
-        // Set padded dimensions to zero
-        for i in V..Vp {
-            probs_chunk[i] = 0.0;
-        }
-    });
+            // Set padded dimensions to zero
+            for i in V..Vp {
+                probs_chunk[i] = 0.0;
+            }
+        });
 }
 
 /// Computes the cross-entropy losses from probabilities and targets.
@@ -768,22 +785,25 @@ pub fn crossentropy_forward(
     T: usize,
     Vp: usize,
 ) {
-    losses.into_par_iter().enumerate().for_each(|(i, loss_val)| {
-        // Calculate the batch index (b) and time step index (t) from the flat index `i`
-        let b = i / T; // integer division gives the batch index
-        let t = i % T; // remainder gives the time step index
+    losses
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, loss_val)| {
+            // Calculate the batch index (b) and time step index (t) from the flat index `i`
+            let b = i / T; // integer division gives the batch index
+            let t = i % T; // remainder gives the time step index
 
-        let bt = b * T + t;
+            let bt = b * T + t;
 
-        // Calculate the base index for the current batch and time step in probs
-        let probs_bt = &probs[bt * Vp..(bt + 1) * Vp];
+            // Calculate the base index for the current batch and time step in probs
+            let probs_bt = &probs[bt * Vp..(bt + 1) * Vp];
 
-        // Get the target index for the current batch and time step
-        let ix = targets[bt] as usize;
+            // Get the target index for the current batch and time step
+            let ix = targets[bt] as usize;
 
-        // Compute the cross-entropy loss for the current batch and time step
-        *loss_val = -probs_bt[ix].ln();
-    });
+            // Compute the cross-entropy loss for the current batch and time step
+            *loss_val = -probs_bt[ix].ln();
+        });
 }
 
 /// Backward pass through both softmax and cross-entropy loss.
@@ -804,17 +824,20 @@ pub fn crossentropy_softmax_backward(
     V: usize,
     Vp: usize,
 ) {
-    dlogits.par_chunks_mut(Vp).enumerate().for_each(|(bt, dlogits_chunk)| {
-        // Calculate the base addresses
-        let probs_slice = &probs[bt * Vp..(bt + 1) * Vp];
-        let dloss = dlosses[bt];
-        let ix = targets[bt] as usize;
+    dlogits
+        .par_chunks_mut(Vp)
+        .enumerate()
+        .for_each(|(bt, dlogits_chunk)| {
+            // Calculate the base addresses
+            let probs_slice = &probs[bt * Vp..(bt + 1) * Vp];
+            let dloss = dlosses[bt];
+            let ix = targets[bt] as usize;
 
-        // Loop only to V, leaving padded dimensions untouched
-        for i in 0..V {
-            let p = probs_slice[i];
-            let indicator = if i == ix { 1.0 } else { 0.0 };
-            dlogits_chunk[i] += (p - indicator) * dloss;
-        }
-    });
+            // Loop only to V, leaving padded dimensions untouched
+            for i in 0..V {
+                let p = probs_slice[i];
+                let indicator = if i == ix { 1.0 } else { 0.0 };
+                dlogits_chunk[i] += (p - indicator) * dloss;
+            }
+        });
 }

@@ -1,6 +1,6 @@
-mod activation_tensors;
-mod parameter_tensors;
-mod passes;
+pub mod activation_tensors;
+pub mod parameter_tensors;
+pub mod passes;
 
 use core::{panic, slice};
 use std::fs::File;
