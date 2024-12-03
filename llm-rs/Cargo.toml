@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "llm-rs"
 version = "0.1.0"
@@ -9,9 +11,28 @@ edition = "2021"
 [dependencies]
 matrixmultiply = { version = "0.3.9", features = ["threading"] }
 rayon = "1.9.0"
+ndarray = { version = "0.16.1", features = ["matrixmultiply-threading", "rayon"] }
+# blas-sys = { version = "0.7.1" }
+
+[dev-dependencies]
+criterion = "*"
+rand = "0.8.5"
 
 # Build optimized binaries with debug info for use by profiling tools.
 [profile.release]
 debug = 1
 [profile.bench]
 debug = 1
+rustflags = ["-Awarnings"]
+
+[lib]
+name = "llm_rs"
+path = "src/lib.rs"
+
+[[bench]]
+name = "data_loader"
+harness = false
+
+[[bench]]
+name = "matmul_forward"
+harness = false
