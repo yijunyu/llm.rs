@@ -1,3 +1,6 @@
+extern crate intel_mkl_src;
+
+use cblas::{sgemm, Layout, Transpose};
 use rayon::prelude::*;
 use std::f32::consts::PI;
 
@@ -246,7 +249,48 @@ pub fn matmul_forward(
     C: usize,
     OC: usize,
 ) {
+    let m = (B * T) as i32; // Number of rows of the output matrix
+    let k = C as i32;       // Number of columns of the input matrix / rows of the weight matrix
+    let n = OC as i32;      // Number of columns of the output matrix
+
+    // Leading dimensions for Row-Major layout
+    let lda = k; // lda >= K
+    let ldb = k; // ldb >= N
+    let ldc = n; // ldc >= N
+
+    //println!("m: {m}, k: {k}, n: {n}, lda: {lda}, ldb: {ldb}, ldc: {ldc}");
+
+    // Perform the matrix multiplication using BLAS sgemm
     unsafe {
+        sgemm(
+            Layout::RowMajor,
+            Transpose::None, // A
+            Transpose::Ordinary, // Transpose of B
+            m,
+            n,
+            k,
+            1.0,
+            inp,
+            lda,
+            weight,
+            ldb,
+            0.0,
+            out,
+            ldc,
+        );
+    }
+
+    // Add bias if present
+    if !bias.is_empty() {
+        out.par_chunks_mut(OC)
+            .for_each(|row| {
+                for (o, val) in row.iter_mut().enumerate() {
+                    *val += bias[o];
+                }
+            });
+    }
+
+    /*unsafe {
         matrixmultiply::sgemm(
             B * T,
             C,
@@ -271,7 +315,7 @@ pub fn matmul_forward(
                 out[bt * OC + o] += bias[o];
             }
         }
-    }
+    }*/
 }
 
 /// Computes the backward pass for matrix multiplication, updating gradients for inputs,
@@ -306,7 +350,66 @@ pub fn matmul_backward(
     C: usize,
     OC: usize,
 ) {
+    let m = (B * T) as i32; // Number of rows in dout and dinp
+    let k = OC as i32;      // Number of columns in dout and rows in weight
+    let n = C as i32;       // Number of columns in weight and dinp
+
+    // Compute dinp = dout * weight
     unsafe {
+        sgemm(
+            Layout::RowMajor,
+            Transpose::None,     // No transpose for dout
+            Transpose::None,     // No transpose for weight
+            m,
+            n,
+            k,
+            1.0,
+            dout,
+            k,                   // lda >= K (set to k)
+            weight,
+            n,                   // ldb >= N (set to n)
+            0.0,
+            dinp,
+            n,                   // ldc >= N (set to n)
+        );
+    }
+
+    let m_dw = OC as i32;      // Number of rows in dweight and dout^T
+    let k_dw = (B * T) as i32; // Number of columns in dout^T and rows in inp
+    let n_dw = C as i32;       // Number of columns in inp and dweight
+
+    // Compute dweight = dout^T * inp
+    unsafe {
+        sgemm(
+            Layout::RowMajor,
+            Transpose::Ordinary, // Transpose dout
+            Transpose::None,     // No transpose for inp
+            m_dw,
+            n_dw,
+            k_dw,
+            1.0,
+            dout,
+            m_dw,                // lda >= M (set to m_dw)
+            inp,
+            n_dw,                // ldb >= N (set to n_dw)
+            0.0,
+            dweight,
+            n_dw,                // ldc >= N (set to n_dw)
+        );
+    }
+
+    // Compute dbias = sum over batches and time steps of dout
+    if !dbias.is_empty() {
+        for o in 0..OC {
+            let mut sum = 0.0f32;
+            for bt in 0..(B * T) {
+                sum += dout[bt * OC + o];
+            }
+            dbias[o] += sum;
+        }
+    }
+
+    /*unsafe {
         matrixmultiply::sgemm(
             B * T,
             OC,
@@ -348,7 +451,7 @@ pub fn matmul_backward(
                 dbias[o] += dout[bt * OC + o];
             }
         }
-    }
+    }*/
 }
 
 /// Forward pass for multi-head attention, generating output and storing attention scores.
