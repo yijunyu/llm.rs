@@ -9,9 +9,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#matrixmultiply = { version = "0.3.9", features = ["threading"] }
 rayon = "1.9.0"
-ndarray = { version = "0.16.1", features = ["matrixmultiply-threading", "rayon"] }
 blas-src = { version = "0.10.0", features = ["intel-mkl"] }
 cblas= "0.5.0"
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }

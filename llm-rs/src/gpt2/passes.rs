@@ -289,33 +289,6 @@ pub fn matmul_forward(
                 }
             });
     }
-
-    /*unsafe {
-        matrixmultiply::sgemm(
-            B * T,
-            C,
-            OC,
-            1.0,
-            inp.as_ptr(),
-            C as isize,
-            1,
-            weight.as_ptr(),
-            1,
-            C as isize,
-            0.0,
-            out.as_mut_ptr(),
-            OC as isize,
-            1,
-        );
-    }
-
-    if !bias.is_empty() {
-        for bt in 0..B * T {
-            for o in 0..OC {
-                out[bt * OC + o] += bias[o];
-            }
-        }
-    }*/
 }
 
 /// Computes the backward pass for matrix multiplication, updating gradients for inputs,
@@ -408,50 +381,6 @@ pub fn matmul_backward(
             dbias[o] += sum;
         }
     }
-
-    /*unsafe {
-        matrixmultiply::sgemm(
-            B * T,
-            OC,
-            C,
-            1.0,
-            dout.as_ptr(),
-            OC as isize,
-            1,
-            weight.as_ptr(),
-            C as isize,
-            1,
-            1.0,
-            dinp.as_mut_ptr(),
-            C as isize,
-            1,
-        );
-    
-        matrixmultiply::sgemm(
-            OC,
-            B * T,
-            C,
-            1.0,
-            dout.as_ptr(),
-            1,
-            OC as isize,
-            inp.as_ptr(),
-            C as isize,
-            1,
-            1.0,
-            dweight.as_mut_ptr(),
-            C as isize,
-            1,
-        );
-    }
-
-    if !dbias.is_empty() {
-        for bt in 0..B * T {
-            for o in 0..OC {
-                dbias[o] += dout[bt * OC + o];
-            }
-        }
-    }*/
 }
 
 /// Forward pass for multi-head attention, generating output and storing attention scores.

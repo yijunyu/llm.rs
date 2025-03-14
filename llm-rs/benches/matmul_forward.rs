@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use llm_rs::gpt2::passes::*;
 use rand::Rng;
-use ndarray::{ArrayView2, ArrayView1, ArrayViewMut2};
 
 fn benchmark_matmul_forward(c: &mut Criterion) {
     let inputs = vec![
@@ -52,22 +51,12 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
         let inp = generate_random_slice(input.inp);
         let weight = generate_random_slice(input.weight);
         let bias = generate_random_slice(input.bias);
-        let B = input.B;
-        let T = input.T;
-        let C = input.C;
-        let OC = input.OC;
-        // Prepare slices into 2D views
-        let inp_view = ArrayView2::from_shape((B * T, C), &inp).expect("Input shape mismatch");
-        let weight_view = ArrayView2::from_shape((C, OC), &weight).expect("Weight shape mismatch");
-        let bias_view = ArrayView1::from(&bias);
 
-        // The mutable output view must be recreated for each iteration, but allocation happens here
-        let mut out_view = ArrayViewMut2::from_shape((B * T, OC), &mut out)
-            .expect("Output shape mismatch");
-
-        c.bench_function("matmul_forward ndarray", |b| {
+        c.bench_function("matmul_forward updated", |b| {
             b.iter(|| {
-                matmul_forward_ndarray( &mut out_view, &inp_view, &weight_view, &bias_view);
+                matmul_forward_updated(
+                    &mut out, &inp, &weight, &bias, input.B, input.T, input.C, input.OC,
+                );
             });
         });
         c.bench_function("matmul_forward", |b| {
@@ -80,21 +69,20 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
     }
 }
 
-pub fn matmul_forward_ndarray(
-    out_view: &mut ArrayViewMut2<f32>,
-    inp_view: &ArrayView2<f32>,
-    weight_view: &ArrayView2<f32>,
-    bias_view: &ArrayView1<f32>,
+pub fn matmul_forward_updated(
+    out: &mut [f32],
+    inp: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    B: usize,
+    T: usize,
+    C: usize,
+    OC: usize,
 ) {
-    // Perform matrix multiplication and assign the result to the mutable view
-    out_view.assign(&inp_view.dot(weight_view));
-
-    // Add bias if present
-    if !bias_view.is_empty() {
-        for mut row in out_view.outer_iter_mut() {
-            row += bias_view;
-        }
-    }
+    // Placeholder
+    matmul_forward(
+        &mut out, &inp, &weight, &bias, B, T, C, OC
+    )
 }
 
 criterion_group!(benches, benchmark_matmul_forward);
