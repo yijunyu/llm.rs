@@ -1,6 +1,19 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use llm_rs::gpt2::passes::*;
-use rand::Rng;
+#![allow(non_snake_case)]
+mod bench_base;
+
+use bench_base::*;
+use llm_rs::gpt2::passes::matmul_forward;
+
+pub struct MatMulInputs {
+    pub out: usize,
+    pub inp: usize,
+    pub weight: usize,
+    pub bias: usize,
+    pub B: usize,
+    pub T: usize,
+    pub C: usize,
+    pub OC: usize,
+}
 
 fn benchmark_matmul_forward(c: &mut Criterion) {
     let inputs = vec![
@@ -70,7 +83,7 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
 }
 
 pub fn matmul_forward_updated(
-    out: &mut [f32],
+    mut out: &mut [f32],
     inp: &[f32],
     weight: &[f32],
     bias: &[f32],
@@ -87,26 +100,3 @@ pub fn matmul_forward_updated(
 
 criterion_group!(benches, benchmark_matmul_forward);
 criterion_main!(benches);
-
-fn generate_random_slice(len: usize) -> Vec<f32> {
-    let mut rng = rand::thread_rng();
-    let mut slice = Vec::with_capacity(len);
-
-    // Fill the slice with random values
-    for _ in 0..len {
-        slice.push(rng.gen());
-    }
-
-    slice
-}
-
-pub struct MatMulInputs {
-    pub out: usize,
-    pub inp: usize,
-    pub weight: usize,
-    pub bias: usize,
-    pub B: usize,
-    pub T: usize,
-    pub C: usize,
-    pub OC: usize,
-}
