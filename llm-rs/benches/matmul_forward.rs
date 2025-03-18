@@ -4,7 +4,7 @@ mod bench_base;
 use bench_base::*;
 use llm_rs::gpt2::passes::matmul_forward;
 
-pub struct MatMulInputs {
+pub struct MatmulForwardInputs {
     pub out: usize,
     pub inp: usize,
     pub weight: usize,
@@ -17,7 +17,7 @@ pub struct MatMulInputs {
 
 fn benchmark_matmul_forward(c: &mut Criterion) {
     let inputs = vec![
-        MatMulInputs {
+        MatmulForwardInputs {
             out: 196608,
             inp: 196608,
             weight: 589824,
@@ -27,7 +27,7 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
             C: 768,
             OC: 768,
         },
-        MatMulInputs {
+        MatmulForwardInputs {
             out: 786432,
             inp: 196608,
             weight: 2359296,
@@ -37,7 +37,7 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
             C: 768,
             OC: 3072,
         },
-        MatMulInputs {
+        MatmulForwardInputs {
             out: 196608,
             inp: 786432,
             weight: 2359296,
@@ -47,7 +47,7 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
             C: 3072,
             OC: 768,
         },
-        MatMulInputs {
+        MatmulForwardInputs {
             out: 12877824,
             inp: 196608,
             weight: 38633472,
@@ -65,16 +65,17 @@ fn benchmark_matmul_forward(c: &mut Criterion) {
         let weight = generate_random_slice(input.weight);
         let bias = generate_random_slice(input.bias);
 
-        c.bench_function("matmul_forward updated", |b| {
+        c.bench_function("matmul_forward", |b| {
             b.iter(|| {
-                matmul_forward_updated(
+                matmul_forward(
                     &mut out, &inp, &weight, &bias, input.B, input.T, input.C, input.OC,
                 );
             });
         });
-        c.bench_function("matmul_forward", |b| {
+
+        c.bench_function("matmul_forward updated", |b| {
             b.iter(|| {
-                matmul_forward(
+                matmul_forward_updated(
                     &mut out, &inp, &weight, &bias, input.B, input.T, input.C, input.OC,
                 );
             });

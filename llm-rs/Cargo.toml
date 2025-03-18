@@ -29,10 +29,67 @@ rustflags = ["-Awarnings"]
 name = "llm_rs"
 path = "src/lib.rs"
 
+# Benchmarks
 [[bench]]
 name = "data_loader"
 harness = false
 
 [[bench]]
 name = "matmul_forward"
+harness = false
+
+[[bench]]
+name = "encoder_forward"
+harness = false
+
+[[bench]]
+name = "encoder_backward"
+harness = false
+
+[[bench]]
+name = "layernorm_forward"
+harness = false
+
+[[bench]]
+name = "layernorm_backward"
+harness = false
+
+[[bench]]
+name = "matmul_backward"
+harness = false
+
+[[bench]]
+name = "attention_forward"
+harness = false
+
+[[bench]]
+name = "attention_backward"
+harness = false
+
+[[bench]]
+name = "gelu_forward"
+harness = false
+
+[[bench]]
+name = "gelu_backward"
+harness = false
+
+[[bench]]
+name = "residual_forward"
+harness = false
+
+[[bench]]
+name = "residual_backward"
+harness = false
+
+[[bench]]
+name = "softmax_forward"
+harness = false
+
+[[bench]]
+name = "crossentropy_forward"
+harness = false
+
+[[bench]]
+name = "crossentropy_softmax_backward"
 harness = false

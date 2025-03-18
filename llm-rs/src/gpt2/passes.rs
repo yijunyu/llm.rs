@@ -403,6 +403,8 @@ pub fn attention_forward(
     C: usize,
     NH: usize,
 ) {
+    println!(" out: {}\n preatt: {}\n att: {}\n inp: {}\n T: {}\n C: {}\n NH: {}", out.len(), preatt.len(), att.len(), inp.len(), T, C, NH);
+
     let C3 = C * 3; // feature dimension scaled by 3
     let hs = C / NH; // head size
     let scale = 1.0 / (hs as f32).sqrt(); // scale for dot product
