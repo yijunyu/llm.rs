@@ -347,7 +347,7 @@ impl GPT2 {
         let params = &self.params;
         let acts = &mut self.acts;
 
-        encoder_forward(&mut acts.encoded, &inputs, &params.wte, &params.wpe, T, C);
+        encoder_forward(&mut acts.encoded, &inputs, &params.wte, &params.wpe, B, T, C);
 
         for l in 0..L {
             // Get the pointers of the weights for this layer
@@ -398,12 +398,14 @@ impl GPT2 {
                 &prev_residual,
                 l_ln1w,
                 l_ln1b,
+                B,
+                T,
                 C,
             );
             matmul_forward(&mut l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
-            attention_forward(&mut l_atty, &mut l_preatt, &mut l_att, l_qkv, T, C, NH);
+            attention_forward(&mut l_atty, &mut l_preatt, &mut l_att, l_qkv, B, T, C, NH);
             matmul_forward(&mut l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
-            residual_forward(&mut l_residual2, &mut prev_residual, l_attproj);
+            residual_forward(&mut l_residual2, &mut prev_residual, l_attproj, B * T * C);
             layernorm_forward(
                 &mut l_ln2,
                 &mut l_ln2_mean,
@@ -411,10 +413,12 @@ impl GPT2 {
                 l_residual2,
                 l_ln2w,
                 l_ln2b,
+                B,
+                T,
                 C,
             );
             matmul_forward(&mut l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
-            gelu_forward(&mut l_fch_gelu, l_fch);
+            gelu_forward(&mut l_fch_gelu, l_fch, B * T * 4 * C);
             matmul_forward(
                 &mut l_fcproj,
                 l_fch_gelu,
@@ -425,7 +429,7 @@ impl GPT2 {
                 4 * C,
                 C,
             );
-            residual_forward(&mut l_residual3, l_residual2, l_fcproj);
+            residual_forward(&mut l_residual3, l_residual2, l_fcproj, B * T * C);
         }
 
         layernorm_forward(
@@ -435,6 +439,8 @@ impl GPT2 {
             &acts.residual3[(L - 1) * B * T * C..L * B * T * C],
             &params.lnfw,
             &params.lnfb,
+            B,
+            T,
             C,
         );
         matmul_forward(
@@ -447,11 +453,11 @@ impl GPT2 {
             C,
             Vp,
         );
-        softmax_forward(&mut acts.probs, &acts.logits, V, Vp);
+        softmax_forward(&mut acts.probs, &acts.logits, B, T, V, Vp);
 
         // Forward the cross-entropy loss function if we have the targets
         if !targets.is_empty() {
-            crossentropy_forward(&mut self.acts.losses, &self.acts.probs, targets, T, Vp);
+            crossentropy_forward(&mut self.acts.losses, &self.acts.probs, targets, B, T, Vp);
 
             // Evaluate the mean loss
             let mean_loss = self.acts.losses.iter().sum::<f32>() / (B * T) as f32;
@@ -505,6 +511,8 @@ impl GPT2 {
             &grads_acts.losses,
             &acts.probs,
             &self.targets,
+            B,
+            T,
             V,
             Vp,
         );
@@ -533,6 +541,8 @@ impl GPT2 {
             &params.lnfw,
             &acts.lnf_mean,
             &acts.lnf_rstd,
+            B,
+            T,
             C,
         );
 
@@ -603,7 +613,7 @@ impl GPT2 {
             };
 
             // Backprop this layer
-            residual_backward(&mut dl_residual2, &mut dl_fcproj, &dl_residual3);
+            residual_backward(&mut dl_residual2, &mut dl_fcproj, &dl_residual3, B * T * C);
             matmul_backward(
                 &mut dl_fch_gelu,
                 &mut dl_fcprojw,
@@ -616,7 +626,7 @@ impl GPT2 {
                 4 * C,
                 C,
             );
-            gelu_backward(&mut dl_fch, &l_fch, &dl_fch_gelu);
+            gelu_backward(&mut dl_fch, &l_fch, &dl_fch_gelu, B * T * 4 * C);
             matmul_backward(
                 &mut dl_ln2,
                 &mut dl_fcw,
@@ -638,9 +648,11 @@ impl GPT2 {
                 &l_ln2w,
                 &l_ln2_mean,
                 &l_ln2_rstd,
+                B,
+                T,
                 C,
             );
-            residual_backward(&mut dresidual, &mut dl_attproj, &dl_residual2);
+            residual_backward(&mut dresidual, &mut dl_attproj, &dl_residual2, B * T * C);
             matmul_backward(
                 &mut dl_atty,
                 &mut dl_attprojw,
@@ -686,6 +698,8 @@ impl GPT2 {
                 &l_ln1w,
                 &l_ln1_mean,
                 &l_ln1_rstd,
+                B,
+                T,
                 C,
             );
         }

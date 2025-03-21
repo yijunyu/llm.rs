@@ -5,16 +5,16 @@ use bench_base::*;
 use llm_rs::gpt2::passes::attention_backward;
 
 pub struct AttentionBackwardInputs {
-    dinp: usize,
-    dpreatt: usize,
-    datt: usize,
-    dout: usize,
-    inp: usize,
-    att: usize,
-    B: usize,
-    T: usize,
-    C: usize,
-    NH: usize,
+    pub dinp: usize,
+    pub dpreatt: usize,
+    pub datt: usize,
+    pub dout: usize,
+    pub inp: usize,
+    pub att: usize,
+    pub B: usize,
+    pub T: usize,
+    pub C: usize,
+    pub NH: usize,
 }
 
 fn benchmark_attention_backward(c: &mut Criterion) {

@@ -5,12 +5,14 @@ use bench_base::*;
 use llm_rs::gpt2::passes::crossentropy_softmax_backward;
 
 pub struct CrossentropySoftmaxBacwardInputs {
-    dlogits: usize,
-    dlosses: usize,
-    probs: usize,
-    targets: usize,
-    V: usize,
-    Vp: usize,
+    pub dlogits: usize,
+    pub dlosses: usize,
+    pub probs: usize,
+    pub targets: usize,
+    pub B: usize,
+    pub T: usize,
+    pub V: usize,
+    pub Vp: usize,
 }
 
 fn benchmark_crossentropy_softmax_backward(c: &mut Criterion) {
@@ -20,6 +22,8 @@ fn benchmark_crossentropy_softmax_backward(c: &mut Criterion) {
             dlosses: 256,
             probs: 12877824,
             targets: 256,
+            B: 4,
+            T: 64,
             V: 50257,
             Vp: 50304,
         }
@@ -34,7 +38,7 @@ fn benchmark_crossentropy_softmax_backward(c: &mut Criterion) {
         c.bench_function("crossentropy_softmax_backward", |b| {
             b.iter(|| {
                 crossentropy_softmax_backward(
-                    &mut dlogits, &dlosses, &probs, &targets, input.V, input.Vp
+                    &mut dlogits, &dlosses, &probs, &targets, input.B, input.T, input.V, input.Vp
                 );
             });
         });
@@ -42,7 +46,7 @@ fn benchmark_crossentropy_softmax_backward(c: &mut Criterion) {
         c.bench_function("crossentropy_softmax_backward updated", |b| {
             b.iter(|| {
                 crossentropy_softmax_backward_updated(
-                    &mut dlogits, &dlosses, &probs, &targets, input.V, input.Vp
+                    &mut dlogits, &dlosses, &probs, &targets, input.B, input.T, input.V, input.Vp
                 );
             });
         });
@@ -54,12 +58,14 @@ pub fn crossentropy_softmax_backward_updated(
     dlosses: &[f32],
     probs: &[f32],
     targets: &[i32],
+    B: usize,
+    T: usize,
     V: usize,
     Vp: usize,
 ) {
     // Placeholder
     crossentropy_softmax_backward(
-        &mut dlogits, &dlosses, &probs, &targets, V, Vp
+        &mut dlogits, &dlosses, &probs, &targets, B, T, V, Vp
     );
 }
 

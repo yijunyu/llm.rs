@@ -5,9 +5,10 @@ use bench_base::*;
 use llm_rs::gpt2::passes::residual_backward;
 
 pub struct ResidualBackwardInputs {
-    dinp1: usize,
-    dinp2: usize,
-    dout: usize,
+    pub dinp1: usize,
+    pub dinp2: usize,
+    pub dout: usize,
+    pub N: usize,
 }
 
 fn benchmark_residual_backward(c: &mut Criterion) {
@@ -16,6 +17,7 @@ fn benchmark_residual_backward(c: &mut Criterion) {
             dinp1: 196608, 
             dinp2: 196608, 
             dout: 196608,
+            N: 786432,
         }
     ];
 
@@ -27,7 +29,7 @@ fn benchmark_residual_backward(c: &mut Criterion) {
         c.bench_function("residual_backward", |b| {
             b.iter(|| {
                 residual_backward(
-                    &mut dinp1, &mut dinp2, &dout
+                    &mut dinp1, &mut dinp2, &dout, input.N
                 );
             });
         });
@@ -35,7 +37,7 @@ fn benchmark_residual_backward(c: &mut Criterion) {
         c.bench_function("residual_backward updated", |b| {
             b.iter(|| {
                 residual_backward_updated(
-                    &mut dinp1, &mut dinp2, &dout
+                    &mut dinp1, &mut dinp2, &dout, input.N
                 );
             });
         });
@@ -46,10 +48,11 @@ pub fn residual_backward_updated(
     mut dinp1: &mut [f32], 
     mut dinp2: &mut [f32], 
     dout: &[f32],
+    N: usize,
 ) {
     // Placeholder
     residual_backward(
-        &mut dinp1, &mut dinp2, &dout
+        &mut dinp1, &mut dinp2, &dout, N
     );
 }
 

@@ -13,6 +13,8 @@ pub struct LayernormBackwardInputs {
     pub weight: usize,
     pub mean: usize,
     pub rstd: usize,
+    pub B: usize,
+    pub T: usize,
     pub C: usize,
 }
 
@@ -27,6 +29,8 @@ fn benchmark_layernorm_backward(c: &mut Criterion) {
             weight: 768,
             mean: 256,
             rstd: 256,
+            B: 4,
+            T: 64,
             C: 768,
         }
     ];
@@ -44,7 +48,7 @@ fn benchmark_layernorm_backward(c: &mut Criterion) {
         c.bench_function("layernorm_backward", |b| {
             b.iter(|| {
                 layernorm_backward(
-                    &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, input.C
+                    &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, input.B, input.T, input.C
                 );
             });
         });
@@ -52,7 +56,7 @@ fn benchmark_layernorm_backward(c: &mut Criterion) {
         c.bench_function("layernorm_backward updated", |b| {
             b.iter(|| {
                 layernorm_backward_updated(
-                    &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, input.C
+                    &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, input.B, input.T, input.C
                 );
             });
         });
@@ -68,11 +72,13 @@ pub fn layernorm_backward_updated(
     weight: &[f32],
     mean: &[f32],
     rstd: &[f32],
+    B: usize,
+    T: usize,
     C: usize,
 ) {
     // Placeholder
     layernorm_backward(
-        &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, C
+        &mut dinp, &mut dweight, &mut dbias, &dout, &inp, &weight, &mean, &rstd, B, T, C
     );
 }
 

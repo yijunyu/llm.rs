@@ -11,6 +11,8 @@ pub struct LayernormForwardInputs {
     pub inp: usize,
     pub weight: usize,
     pub bias: usize,
+    pub B: usize,
+    pub T: usize,
     pub C: usize,
 }
 
@@ -23,6 +25,8 @@ fn benchmark_layernorm_forward(c: &mut Criterion) {
             inp: 196608,
             weight: 768,
             bias: 768,
+            B: 4,
+            T: 64,
             C: 768,
         }
     ];
@@ -38,7 +42,7 @@ fn benchmark_layernorm_forward(c: &mut Criterion) {
         c.bench_function("layernorm_forward", |b| {
             b.iter(|| {
                 layernorm_forward(
-                    &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, input.C
+                    &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, input.B, input.T, input.C
                 );
             });
         });
@@ -46,7 +50,7 @@ fn benchmark_layernorm_forward(c: &mut Criterion) {
         c.bench_function("layernorm_forward updated", |b| {
             b.iter(|| {
                 layernorm_forward_updated(
-                    &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, input.C
+                    &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, input.B, input.T, input.C
                 );
             });
         });
@@ -60,11 +64,13 @@ pub fn layernorm_forward_updated(
     inp: &[f32],
     weight: &[f32],
     bias: &[f32],
+    B: usize,
+    T: usize,
     C: usize,
 ) {
     // Placeholder
     layernorm_forward(
-        &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, C
+        &mut out, &mut mean, &mut rstd, &inp, &weight, &bias, B, T, C
     );
 }
 

@@ -5,9 +5,10 @@ use bench_base::*;
 use llm_rs::gpt2::passes::residual_forward;
 
 pub struct ResidualForwardInputs {
-    out: usize,
-    inp1: usize,
-    inp2: usize,
+    pub out: usize,
+    pub inp1: usize,
+    pub inp2: usize,
+    pub N: usize,
 }
 
 fn benchmark_residual_forward(c: &mut Criterion) {
@@ -16,6 +17,7 @@ fn benchmark_residual_forward(c: &mut Criterion) {
             out: 196608, 
             inp1: 196608, 
             inp2: 196608,
+            N: 786432,
         }
     ];
 
@@ -27,7 +29,7 @@ fn benchmark_residual_forward(c: &mut Criterion) {
         c.bench_function("residual_forward", |b| {
             b.iter(|| {
                 residual_forward(
-                    &mut out, &inp1, &inp2
+                    &mut out, &inp1, &inp2, input.N
                 );
             });
         });
@@ -35,7 +37,7 @@ fn benchmark_residual_forward(c: &mut Criterion) {
         c.bench_function("residual_forward updated", |b| {
             b.iter(|| {
                 residual_forward_updated(
-                    &mut out, &inp1, &inp2
+                    &mut out, &inp1, &inp2, input.N
                 );
             });
         });
@@ -46,10 +48,11 @@ pub fn residual_forward_updated(
     mut out: &mut [f32], 
     inp1: &[f32], 
     inp2: &[f32],
+    N: usize
 ) {
     // Placeholder
     residual_forward(
-        &mut out, &inp1, &inp2
+        &mut out, &inp1, &inp2, N
     );
 }
 

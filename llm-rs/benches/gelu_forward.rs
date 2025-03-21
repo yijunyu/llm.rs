@@ -5,8 +5,9 @@ use bench_base::*;
 use llm_rs::gpt2::passes::gelu_forward;
 
 pub struct GeluForwardInputs {
-    out: usize,
-    inp: usize,
+    pub out: usize,
+    pub inp: usize,
+    pub N: usize,
 }
 
 fn benchmark_gelu_forward(c: &mut Criterion) {
@@ -14,6 +15,7 @@ fn benchmark_gelu_forward(c: &mut Criterion) {
         GeluForwardInputs {
             out: 786432, 
             inp: 786432, 
+            N: 786432,
         }
     ];
 
@@ -24,7 +26,7 @@ fn benchmark_gelu_forward(c: &mut Criterion) {
         c.bench_function("gelu_forward", |b| {
             b.iter(|| {
                 gelu_forward(
-                    &mut out, &inp
+                    &mut out, &inp, input.N
                 );
             });
         });
@@ -32,7 +34,7 @@ fn benchmark_gelu_forward(c: &mut Criterion) {
         c.bench_function("gelu_forward updated", |b| {
             b.iter(|| {
                 gelu_forward_updated(
-                    &mut out, &inp
+                    &mut out, &inp, input.N
                 );
             });
         });
@@ -42,10 +44,11 @@ fn benchmark_gelu_forward(c: &mut Criterion) {
 pub fn gelu_forward_updated(
     mut out: &mut [f32], 
     inp: &[f32], 
+    N: usize,
 ) {
     // Placeholder
     gelu_forward(
-        &mut out, &inp
+        &mut out, &inp, N
     );
 }
 

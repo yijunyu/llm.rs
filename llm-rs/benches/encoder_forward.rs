@@ -9,6 +9,7 @@ pub struct EncoderForwardInputs {
     pub inp: usize,
     pub wte: usize,
     pub wpe: usize,
+    pub B: usize,
     pub T: usize,
     pub C: usize,
 }
@@ -20,6 +21,7 @@ fn benchmark_encoder_forward(c: &mut Criterion) {
             inp: 256,
             wte: 38633472,
             wpe: 786432,
+            B: 4,
             T: 64,
             C: 768,
         }
@@ -34,7 +36,7 @@ fn benchmark_encoder_forward(c: &mut Criterion) {
         c.bench_function("encoder_forward", |b| {
             b.iter(|| {
                 encoder_forward(
-                    &mut out, &inp, &wte, &wpe, input.T, input.C
+                    &mut out, &inp, &wte, &wpe, input.B, input.T, input.C
                 );
             });
         });
@@ -42,7 +44,7 @@ fn benchmark_encoder_forward(c: &mut Criterion) {
         c.bench_function("encoder_forward updated", |b| {
             b.iter(|| {
                 encoder_forward_updated(
-                    &mut out, &inp, &wte, &wpe, input.T, input.C
+                    &mut out, &inp, &wte, &wpe, input.B, input.T, input.C
                 );
             });
         });
@@ -54,12 +56,13 @@ pub fn encoder_forward_updated(
     inp: &[i32],
     wte: &[f32],
     wpe: &[f32],
+    B: usize,
     T: usize,
     C: usize,
 ) {
     // Placeholder
     encoder_forward(
-        &mut out, &inp, &wte, &wpe, T, C
+        &mut out, &inp, &wte, &wpe, B, T, C
     );
 }
 

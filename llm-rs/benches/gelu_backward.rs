@@ -5,9 +5,10 @@ use bench_base::*;
 use llm_rs::gpt2::passes::gelu_backward;
 
 pub struct GeluBackwardInputs {
-    dinp: usize,
-    inp: usize,
-    dout: usize,
+    pub dinp: usize,
+    pub inp: usize,
+    pub dout: usize,
+    pub N: usize,
 }
 
 fn benchmark_gelu_backward(c: &mut Criterion) {
@@ -16,6 +17,7 @@ fn benchmark_gelu_backward(c: &mut Criterion) {
             dinp: 786432, 
             inp: 786432,
             dout: 786432, 
+            N: 786432,
         }
     ];
 
@@ -27,7 +29,7 @@ fn benchmark_gelu_backward(c: &mut Criterion) {
         c.bench_function("gelu_backward", |b| {
             b.iter(|| {
                 gelu_backward(
-                    &mut dinp, &inp, &dout
+                    &mut dinp, &inp, &dout, input.N
                 );
             });
         });
@@ -35,7 +37,7 @@ fn benchmark_gelu_backward(c: &mut Criterion) {
         c.bench_function("gelu_backward updated", |b| {
             b.iter(|| {
                 gelu_backward_updated(
-                    &mut dinp, &inp, &dout
+                    &mut dinp, &inp, &dout, input.N
                 );
             });
         });
@@ -46,10 +48,11 @@ pub fn gelu_backward_updated(
     mut dinp: &mut [f32], 
     inp: &[f32], 
     dout: &[f32],
+    N: usize,
 ) {
     // Placeholder
     gelu_backward(
-        &mut dinp, &inp, &dout
+        &mut dinp, &inp, &dout, N
     );
 }
 

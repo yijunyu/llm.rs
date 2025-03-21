@@ -5,16 +5,16 @@ use bench_base::*;
 use llm_rs::gpt2::passes::matmul_backward;
 
 pub struct MatmulBackwardInputs {
-    dinp: usize,
-    dweight: usize,
-    dbias: usize,
-    dout: usize,
-    inp: usize,
-    weight: usize,
-    B: usize,
-    T: usize,
-    C: usize,
-    OC: usize,
+    pub dinp: usize,
+    pub dweight: usize,
+    pub dbias: usize,
+    pub dout: usize,
+    pub inp: usize,
+    pub weight: usize,
+    pub B: usize,
+    pub T: usize,
+    pub C: usize,
+    pub OC: usize,
 }
 
 fn benchmark_matmul_backward(c: &mut Criterion) {

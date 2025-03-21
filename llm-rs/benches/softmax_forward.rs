@@ -5,10 +5,12 @@ use bench_base::*;
 use llm_rs::gpt2::passes::softmax_forward;
 
 pub struct SoftmaxForwardInputs {
-    probs: usize,
-    logits: usize,
-    V: usize,
-    Vp: usize,
+    pub probs: usize,
+    pub logits: usize,
+    pub B: usize,
+    pub T: usize,
+    pub V: usize,
+    pub Vp: usize,
 }
 
 fn benchmark_softmax_forward(c: &mut Criterion) {
@@ -16,6 +18,8 @@ fn benchmark_softmax_forward(c: &mut Criterion) {
         SoftmaxForwardInputs {
             probs: 12877824,
             logits: 12877824,
+            B: 4,
+            T: 64,
             V: 50257,
             Vp: 50304,
         }
@@ -28,7 +32,7 @@ fn benchmark_softmax_forward(c: &mut Criterion) {
         c.bench_function("softmax_forward", |b| {
             b.iter(|| {
                 softmax_forward(
-                    &mut probs, &logits, input.V, input.Vp
+                    &mut probs, &logits, input.B, input.T, input.V, input.Vp
                 );
             });
         });
@@ -36,7 +40,7 @@ fn benchmark_softmax_forward(c: &mut Criterion) {
         c.bench_function("softmax_forward updated", |b| {
             b.iter(|| {
                 softmax_forward_updated(
-                    &mut probs, &logits, input.V, input.Vp
+                    &mut probs, &logits, input.V, input.Vp, input.B, input.T
                 );
             });
         });
@@ -46,12 +50,14 @@ fn benchmark_softmax_forward(c: &mut Criterion) {
 pub fn softmax_forward_updated(
     mut probs: &mut [f32],
     logits: &[f32],
+    B: usize,
+    T: usize,
     V: usize,
     Vp: usize,
 ) {
     // Placeholder
     softmax_forward(
-        &mut probs, &logits, V, Vp
+        &mut probs, &logits, B, T, V, Vp
     );
 }
 

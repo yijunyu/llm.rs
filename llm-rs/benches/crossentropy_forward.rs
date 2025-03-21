@@ -5,11 +5,12 @@ use bench_base::*;
 use llm_rs::gpt2::passes::crossentropy_forward;
 
 pub struct CrossentropyForwardInputs {
-    losses: usize,
-    probs: usize,
-    targets: usize,
-    T: usize,
-    Vp: usize,
+    pub losses: usize,
+    pub probs: usize,
+    pub targets: usize,
+    pub B: usize,
+    pub T: usize,
+    pub Vp: usize,
 }
 
 fn benchmark_crossentropy_forward(c: &mut Criterion) {
@@ -18,6 +19,7 @@ fn benchmark_crossentropy_forward(c: &mut Criterion) {
             losses: 256,
             probs: 12877824,
             targets: 256,
+            B: 4,
             T: 64,
             Vp: 50304,
         }
@@ -31,7 +33,7 @@ fn benchmark_crossentropy_forward(c: &mut Criterion) {
         c.bench_function("crossentropy_forward", |b| {
             b.iter(|| {
                 crossentropy_forward(
-                    &mut losses, &probs, &targets, input.T, input.Vp
+                    &mut losses, &probs, &targets, input.B, input.T, input.Vp
                 );
             });
         });
@@ -39,7 +41,7 @@ fn benchmark_crossentropy_forward(c: &mut Criterion) {
         c.bench_function("crossentropy_forward updated", |b| {
             b.iter(|| {
                 crossentropy_forward_updated(
-                    &mut losses, &probs, &targets, input.T, input.Vp
+                    &mut losses, &probs, &targets, input.B, input.T, input.Vp
                 );
             });
         });
@@ -50,12 +52,13 @@ pub fn crossentropy_forward_updated(
     mut losses: &mut [f32],
     probs: &[f32],
     targets: &[i32],
+    B: usize,
     T: usize,
     Vp: usize,
 ) {
     // Placeholder
     crossentropy_forward(
-        &mut losses, &probs, &targets, T, Vp
+        &mut losses, &probs, &targets, B, T, Vp
     );
 }
 

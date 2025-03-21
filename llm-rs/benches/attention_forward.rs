@@ -5,13 +5,14 @@ use bench_base::*;
 use llm_rs::gpt2::passes::attention_forward;
 
 pub struct AttentionForwardInputs {
-    out: usize,
-    preatt: usize,
-    att: usize,
-    inp: usize,
-    T: usize,
-    C: usize,
-    NH: usize,
+    pub out: usize,
+    pub preatt: usize,
+    pub att: usize,
+    pub inp: usize,
+    pub B: usize,
+    pub T: usize,
+    pub C: usize,
+    pub NH: usize,
 }
 
 fn benchmark_attention_forward(c: &mut Criterion) {
@@ -21,6 +22,7 @@ fn benchmark_attention_forward(c: &mut Criterion) {
             preatt: 196608, 
             att: 196608, 
             inp: 589824, 
+            B: 4,
             T: 64, 
             C: 768, 
             NH: 12, 
@@ -36,7 +38,7 @@ fn benchmark_attention_forward(c: &mut Criterion) {
         c.bench_function("attention_forward", |b| {
             b.iter(|| {
                 attention_forward(
-                    &mut out, &mut preatt, &mut att, &inp, input.T, input.C, input.NH
+                    &mut out, &mut preatt, &mut att, &inp, input.B, input.T, input.C, input.NH
                 );
             });
         });
@@ -44,7 +46,7 @@ fn benchmark_attention_forward(c: &mut Criterion) {
         c.bench_function("attention_forward updated", |b| {
             b.iter(|| {
                 attention_forward_updated(
-                    &mut out, &mut preatt, &mut att, &inp, input.T, input.C, input.NH
+                    &mut out, &mut preatt, &mut att, &inp, input.B, input.T, input.C, input.NH
                 );
             });
         });
@@ -56,13 +58,14 @@ pub fn attention_forward_updated(
     mut preatt: &mut [f32],
     mut att: &mut [f32],
     inp: &[f32],
+    B: usize,
     T: usize,
     C: usize,
     NH: usize,
 ) {
     // Placeholder
     attention_forward(
-        &mut out, &mut preatt, &mut att, &inp, T, C, NH
+        &mut out, &mut preatt, &mut att, &inp, B, T, C, NH
     );
 }
 
