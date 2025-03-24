@@ -8,12 +8,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-rayon = "1.9.0"
-blas-src = { version = "0.10.0", features = ["intel-mkl"] }
-cblas= "0.5.0"
-intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
-
 [dev-dependencies]
 criterion = "*"
 rand = "0.8.5"
